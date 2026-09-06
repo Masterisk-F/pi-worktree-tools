@@ -1,5 +1,4 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { appendFileSync } from "node:fs";
 import { Type } from "typebox";
 import { setEffectiveCwd, getEffectiveCwd, updateFooterStatus } from "@harms-haus/pi-cwd/src/state.js";
 import { parseWorktreePorcelain } from "@harms-haus/pi-worktrees/src/git.js";
@@ -93,13 +92,6 @@ export default function (pi: ExtensionAPI): void {
 
   // ── session_shutdown hook ──────────────────────────────────────────
   pi.on("session_shutdown", async (event, ctx) => {
-    try {
-      appendFileSync(
-        "/tmp/pi-worktree-tools-debug.log",
-        `[shutdown] event: ${JSON.stringify(event)}, hasUI: ${ctx.hasUI}, getEffectiveCwd: ${getEffectiveCwd()}, ctx.cwd: ${ctx.cwd}\n`,
-      );
-    } catch {}
-
     if (event.reason !== "quit" || !ctx.hasUI) return;
 
     // 1. Collect candidate paths to discover git repositories touched in this session
