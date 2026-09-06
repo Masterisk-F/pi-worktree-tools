@@ -26,13 +26,16 @@ export default function (pi: ExtensionAPI): void {
     name: "worktree_create",
     label: "Worktree Create",
     description:
-      "Create a new git worktree from the default branch and switch working directory to it. ALWAYS prefer this tool over running raw `git worktree add` commands in bash.",
-    promptSnippet: "Create a git worktree and switch working directory (prefer over raw git worktree add)",
+      "Create a git worktree for a branch (works for BOTH existing branches and new branches) and switch working directory to it. ALWAYS use this tool instead of running `git worktree add` or `git checkout` in bash.",
+    promptSnippet: "Create a git worktree for an existing or new branch and switch working directory (prefer over raw git commands)",
     promptGuidelines: [
-      "ALWAYS use worktree_create instead of running raw `git worktree add` commands in bash when creating a worktree, so that Pi's working directory and footer status are properly updated.",
+      "ALWAYS use worktree_create to open or create a worktree for any branch (whether the branch already exists or is new). NEVER use bash git commands like `git worktree add` or `git checkout`.",
     ],
     parameters: Type.Object({
-      branch: Type.String({ description: "Name of the branch to create, e.g. feature/my-feature" }),
+      branch: Type.String({
+        description:
+          "Branch name to checkout in a worktree (existing branch to checkout, or new branch name to create, e.g. feature/login or fix/bug)",
+      }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const activeCwd = getEffectiveCwd() || ctx.cwd;
@@ -49,13 +52,15 @@ export default function (pi: ExtensionAPI): void {
     name: "worktree_switch",
     label: "Worktree Switch",
     description:
-      "Switch working directory to an existing git worktree or back to the default branch. ALWAYS prefer this tool over running raw `cd` or `git checkout` commands in bash.",
-    promptSnippet: "Switch between git worktrees (prefer over cd/checkout)",
+      "Switch working directory to an already existing worktree, or back to the default branch (main/master). If the worktree does not exist yet, use worktree_create instead. ALWAYS use this tool instead of `cd` or `git checkout` in bash.",
+    promptSnippet: "Switch between existing git worktrees or back to main (prefer over cd/checkout)",
     promptGuidelines: [
-      "ALWAYS use worktree_switch instead of running raw `cd` or `git checkout` commands in bash when switching between worktrees or returning to main.",
+      "ALWAYS use worktree_switch to move between existing worktrees or to return to the default branch (main/master). If the target branch worktree does not exist yet, use worktree_create.",
     ],
     parameters: Type.Object({
-      branch: Type.String({ description: "Branch name or default branch name (e.g. main)" }),
+      branch: Type.String({
+        description: "Branch name of an existing worktree, or default branch name (e.g. main/master)",
+      }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const activeCwd = getEffectiveCwd() || ctx.cwd;
