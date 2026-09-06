@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createInterface } from "node:readline";
+import { createInterface } from "node:readline/promises";
 import { Type } from "typebox";
 import { setEffectiveCwd, getEffectiveCwd, updateFooterStatus as updateCwdFooter } from "@harms-haus/pi-cwd/src/state.js";
 import {
@@ -23,17 +23,6 @@ import {
 export default function (pi: ExtensionAPI): void {
   const getCwd = () => getEffectiveCwd() || process.cwd();
 
-  // TUI is already torn down when session_shutdown fires, so ctx.ui.confirm()
-  // cannot render. Use readline on stdin/stdout instead.
-  function confirmOnExit(question: string): Promise<boolean> {
-    return new Promise((resolve) => {
-      const rl = createInterface({ input: process.stdin, output: process.stdout });
-      rl.question(question, (answer) => {
-        rl.close();
-        resolve(/^[yY]/.test(answer.trim()));
-      });
-    });
-  }
 
   const updateWorktreeStatus = (
     ctx: unknown,
@@ -237,11 +226,13 @@ export default function (pi: ExtensionAPI): void {
 
     // 5. Confirm deletion with user (readline-based: works after TUI shutdown)
     const names = toCleanup.map((item) => item.wt.branchName).join(", ");
-    const confirmed = await confirmOnExit(
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await rl.question(
       `\nRemove worktree(s) used in this session (${names})? [y/N] `,
     );
+    rl.close();
 
-    if (confirmed) {
+    if (/^[yY]/.test(answer.trim())) {
       for (const item of toCleanup) {
         try {
           await cleanupWorktree(deps, { branch: item.wt.branchName }, { cwd: item.repo });
