@@ -1,0 +1,32 @@
+{
+  "name": "pi-worktree-tools",
+  "version": "0.1.0",
+  "description": "pi-coding-agent extension: agent-callable git worktree tools with shutdown cleanup",
+  "type": "module",
+  "keywords": ["pi-package", "worktrees"],
+  "main": "src/index.ts",
+  "files": ["src/**/*.ts", "!src/**/*.test.ts", "README.md", "LICENSE"],
+  "pi": {
+    "extensions": [
+      "node_modules/@harms-haus/pi-cwd/src/index.ts",
+      "node_modules/@harms-haus/pi-worktrees/src/index.ts",
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@harms-haus/pi-cwd": "^1.0.0",
+    "@harms-haus/pi-worktrees": "^1.0.0"
+  },
+  "bundledDependencies": ["@harms-haus/pi-cwd", "@harms-haus/pi-worktrees"],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.3",
+    "vitest": "^3.0.0",
+    "typescript": "^5.0.0"
+  }
+}
