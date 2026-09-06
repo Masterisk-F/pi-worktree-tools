@@ -1,6 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { setEffectiveCwd, getEffectiveCwd, updateFooterStatus } from "@harms-haus/pi-cwd/src/state.js";
+import { setEffectiveCwd, getEffectiveCwd, updateFooterStatus as updateCwdFooter } from "@harms-haus/pi-cwd/src/state.js";
+import {
+  setMainRepoPath,
+  setDefaultBranch,
+  setCurrentBranch,
+  setCurrentWorktreePath,
+  updateFooterStatus as updateWorktreeFooter,
+} from "@harms-haus/pi-worktrees/src/state.js";
 import { parseWorktreePorcelain } from "@harms-haus/pi-worktrees/src/git.js";
 import type { WorktreeInfo } from "@harms-haus/pi-worktrees/src/types.js";
 import {
@@ -14,11 +21,27 @@ import {
 export default function (pi: ExtensionAPI): void {
   const getCwd = () => getEffectiveCwd() || process.cwd();
 
+  const updateWorktreeStatus = (
+    ctx: unknown,
+    branch: string,
+    worktreePath: string,
+    mainRepo: string,
+    defaultBranch: string,
+  ) => {
+    setMainRepoPath(mainRepo);
+    setDefaultBranch(defaultBranch);
+    setCurrentBranch(branch);
+    setCurrentWorktreePath(worktreePath);
+    updateWorktreeFooter(ctx as any);
+  };
+
   const deps: OpsDeps = {
     exec: (args, cwd) => pi.exec("git", args, { cwd: cwd || getCwd() }),
     setEffectiveCwd,
     appendEntry: (type, data) => pi.appendEntry(type, data),
-    updateFooterStatus: (ctx, cwd, original) => updateFooterStatus(ctx as any, cwd, original),
+    updateFooterStatus: (ctx, cwd, original) => updateCwdFooter(ctx as any, cwd, original),
+    updateWorktreeStatus,
+    getEffectiveCwd,
   };
 
   // ── worktree_create ─────────────────────────────────────────────────
@@ -38,8 +61,7 @@ export default function (pi: ExtensionAPI): void {
       }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const activeCwd = getEffectiveCwd() || ctx.cwd;
-      const result = await createWorktree(deps, params, { cwd: activeCwd });
+      const result = await createWorktree(deps, params, ctx);
       return {
         content: [{ type: "text", text: result.content }],
         details: result.details,
@@ -63,8 +85,7 @@ export default function (pi: ExtensionAPI): void {
       }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const activeCwd = getEffectiveCwd() || ctx.cwd;
-      const result = await switchWorktree(deps, params, { cwd: activeCwd });
+      const result = await switchWorktree(deps, params, ctx);
       return {
         content: [{ type: "text", text: result.content }],
         details: result.details,
@@ -86,8 +107,7 @@ export default function (pi: ExtensionAPI): void {
       branch: Type.String({ description: "Branch name of the worktree to remove" }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const activeCwd = getEffectiveCwd() || ctx.cwd;
-      const result = await cleanupWorktree(deps, params, { cwd: activeCwd });
+      const result = await cleanupWorktree(deps, params, ctx);
       return {
         content: [{ type: "text", text: result.content }],
         details: result.details,
@@ -136,6 +156,14 @@ export default function (pi: ExtensionAPI): void {
           touchedPaths.add(cwd);
           candidatePaths.add(cwd);
         }
+      } else if (entry.type === "custom" && entry.customType === "worktree-change") {
+        const data = entry.data as { currentWorktreePath?: string; currentBranch?: string; mainRepoPath?: string };
+        if (data?.currentBranch) touchedBranches.add(data.currentBranch);
+        if (data?.currentWorktreePath) {
+          touchedPaths.add(data.currentWorktreePath);
+          candidatePaths.add(data.currentWorktreePath);
+        }
+        if (data?.mainRepoPath) candidatePaths.add(data.mainRepoPath);
       }
     }
 

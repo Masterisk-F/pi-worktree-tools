@@ -14,7 +14,15 @@ export interface OpsDeps {
   setEffectiveCwd: (cwd: string) => void;
   appendEntry: (type: string, data: unknown) => void;
   updateFooterStatus: (ctx: unknown, cwd: string, original: string) => void;
+  updateWorktreeStatus?: (
+    ctx: unknown,
+    branch: string,
+    worktreePath: string,
+    mainRepo: string,
+    defaultBranch: string,
+  ) => void;
   statSync?: (path: string) => { isDirectory: () => boolean };
+  getEffectiveCwd?: () => string;
 }
 
 export interface WorktreeToolResult {
@@ -75,7 +83,7 @@ export async function hasUncommittedChangesWithExec(
 export async function createWorktree(
   deps: OpsDeps,
   params: { branch: string },
-  ctx: { cwd: string },
+  ctx: { cwd: string; [key: string]: unknown },
 ): Promise<WorktreeToolResult> {
   const branchName = params.branch.trim();
   const validationError = validateBranchName(branchName);
@@ -83,7 +91,8 @@ export async function createWorktree(
     throw new Error(`Invalid branch name: ${validationError}`);
   }
 
-  const mainRepo = await detectMainRepoWithExec(deps.exec, ctx.cwd);
+  const activeCwd = (deps.getEffectiveCwd?.() || ctx.cwd);
+  const mainRepo = await detectMainRepoWithExec(deps.exec, activeCwd);
   if (!mainRepo) {
     throw new Error("Not inside a git repository");
   }
@@ -116,10 +125,19 @@ export async function createWorktree(
     throw new Error(`Failed to create worktree: ${addResult.stderr.trim()}`);
   }
 
-  // Update CWD & footer
+  const defaultBranch = await detectDefaultBranchWithExec(deps.exec, mainRepo);
+
+  // Update CWD & footers
   deps.setEffectiveCwd(worktreePath);
   deps.appendEntry("cwd-change", { cwd: worktreePath });
+  deps.appendEntry("worktree-change", {
+    mainRepoPath: mainRepo,
+    currentWorktreePath: worktreePath,
+    currentBranch: branchName,
+    defaultBranch,
+  });
   deps.updateFooterStatus(ctx, worktreePath, mainRepo);
+  deps.updateWorktreeStatus?.(ctx, branchName, worktreePath, mainRepo, defaultBranch);
 
   return {
     content: `Created worktree for '${branchName}' at ${worktreePath} and switched working directory.`,
@@ -137,14 +155,15 @@ export async function createWorktree(
 export async function switchWorktree(
   deps: OpsDeps,
   params: { branch: string },
-  ctx: { cwd: string },
+  ctx: { cwd: string; [key: string]: unknown },
 ): Promise<WorktreeToolResult> {
   const target = params.branch.trim();
   if (!target) {
     throw new Error("Branch name cannot be empty");
   }
 
-  const mainRepo = await detectMainRepoWithExec(deps.exec, ctx.cwd);
+  const activeCwd = (deps.getEffectiveCwd?.() || ctx.cwd);
+  const mainRepo = await detectMainRepoWithExec(deps.exec, activeCwd);
   if (!mainRepo) {
     throw new Error("Not inside a git repository");
   }
@@ -154,7 +173,14 @@ export async function switchWorktree(
   if (target === defaultBranch || target === "main" || target === "master") {
     deps.setEffectiveCwd(mainRepo);
     deps.appendEntry("cwd-change", { cwd: mainRepo });
+    deps.appendEntry("worktree-change", {
+      mainRepoPath: mainRepo,
+      currentWorktreePath: mainRepo,
+      currentBranch: defaultBranch,
+      defaultBranch,
+    });
     deps.updateFooterStatus(ctx, mainRepo, mainRepo);
+    deps.updateWorktreeStatus?.(ctx, defaultBranch, mainRepo, mainRepo, defaultBranch);
     return {
       content: `Switched to default branch (${defaultBranch}) at ${mainRepo}.`,
       details: {
@@ -177,7 +203,14 @@ export async function switchWorktree(
 
   deps.setEffectiveCwd(wt.path);
   deps.appendEntry("cwd-change", { cwd: wt.path });
+  deps.appendEntry("worktree-change", {
+    mainRepoPath: mainRepo,
+    currentWorktreePath: wt.path,
+    currentBranch: target,
+    defaultBranch,
+  });
   deps.updateFooterStatus(ctx, wt.path, mainRepo);
+  deps.updateWorktreeStatus?.(ctx, target, wt.path, mainRepo, defaultBranch);
 
   return {
     content: `Switched to worktree '${target}' at ${wt.path}.`,
@@ -195,7 +228,7 @@ export async function switchWorktree(
 export async function cleanupWorktree(
   deps: OpsDeps,
   params: { branch: string },
-  ctx: { cwd: string },
+  ctx: { cwd: string; [key: string]: unknown },
 ): Promise<WorktreeToolResult> {
   const target = params.branch.trim();
   if (!target) {
@@ -207,7 +240,8 @@ export async function cleanupWorktree(
     throw new Error(`Invalid branch name: ${validationError}`);
   }
 
-  const mainRepo = await detectMainRepoWithExec(deps.exec, ctx.cwd);
+  const activeCwd = (deps.getEffectiveCwd?.() || ctx.cwd);
+  const mainRepo = await detectMainRepoWithExec(deps.exec, activeCwd);
   if (!mainRepo) {
     throw new Error("Not inside a git repository");
   }
@@ -253,7 +287,14 @@ export async function cleanupWorktree(
   // Switch back to main repo
   deps.setEffectiveCwd(mainRepo);
   deps.appendEntry("cwd-change", { cwd: mainRepo });
+  deps.appendEntry("worktree-change", {
+    mainRepoPath: mainRepo,
+    currentWorktreePath: mainRepo,
+    currentBranch: defaultBranch,
+    defaultBranch,
+  });
   deps.updateFooterStatus(ctx, mainRepo, mainRepo);
+  deps.updateWorktreeStatus?.(ctx, defaultBranch, mainRepo, mainRepo, defaultBranch);
 
   return {
     content: `Cleaned up worktree '${target}'.${branchDeleted ? ` Branch '${target}' deleted.` : ` Branch '${target}' was not merged and was kept.`}`,
