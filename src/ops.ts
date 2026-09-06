@@ -78,7 +78,44 @@ export async function hasUncommittedChangesWithExec(
 // ============================================================================
 
 /**
- * createWorktree — create a new worktree from default branch and switch CWD
+ * listWorktrees — list all existing worktrees
+ */
+export async function listWorktrees(
+  deps: OpsDeps,
+  _params: Record<string, never>,
+  ctx: { cwd: string; [key: string]: unknown },
+): Promise<WorktreeToolResult> {
+  const activeCwd = deps.getEffectiveCwd?.() || ctx.cwd;
+  const mainRepo = await detectMainRepoWithExec(deps.exec, activeCwd);
+  if (!mainRepo) {
+    throw new Error("Not inside a git repository");
+  }
+
+  const listResult = await deps.exec(["worktree", "list", "--porcelain"], mainRepo);
+  if (listResult.code !== 0) {
+    throw new Error(`Failed to list worktrees: ${listResult.stderr.trim()}`);
+  }
+  const worktrees = parseWorktreePorcelain(listResult.stdout);
+  const defaultBranch = await detectDefaultBranchWithExec(deps.exec, mainRepo);
+
+  const lines = worktrees.map((wt) => {
+    const isMain = wt.path === mainRepo;
+    const marker = isMain ? " (main repo)" : "";
+    return `- **${wt.branchName}**${marker}: \`${wt.path}\` [${wt.head.slice(0, 7)}]`;
+  });
+
+  return {
+    content: `Found ${worktrees.length} worktree(s):\n${lines.join("\n")}`,
+    details: {
+      mainRepo,
+      defaultBranch,
+      worktrees,
+    },
+  };
+}
+
+/**
+ * createWorktree — create a new worktree (or switch to it if it already exists)
  */
 export async function createWorktree(
   deps: OpsDeps,
@@ -91,10 +128,46 @@ export async function createWorktree(
     throw new Error(`Invalid branch name: ${validationError}`);
   }
 
-  const activeCwd = (deps.getEffectiveCwd?.() || ctx.cwd);
+  const activeCwd = deps.getEffectiveCwd?.() || ctx.cwd;
   const mainRepo = await detectMainRepoWithExec(deps.exec, activeCwd);
   if (!mainRepo) {
     throw new Error("Not inside a git repository");
+  }
+
+  const defaultBranch = await detectDefaultBranchWithExec(deps.exec, mainRepo);
+
+  // If target is default branch, switch to main
+  if (branchName === defaultBranch || branchName === "main" || branchName === "master") {
+    return switchWorktree(deps, { branch: defaultBranch }, ctx);
+  }
+
+  // Check if worktree already exists in git worktree list
+  const listResult = await deps.exec(["worktree", "list", "--porcelain"], mainRepo);
+  if (listResult.code === 0) {
+    const worktrees = parseWorktreePorcelain(listResult.stdout);
+    const existingWt = findWorktreeByBranch(worktrees, branchName);
+    if (existingWt) {
+      // Worktree already exists -> switch directly
+      deps.setEffectiveCwd(existingWt.path);
+      deps.appendEntry("cwd-change", { cwd: existingWt.path });
+      deps.appendEntry("worktree-change", {
+        mainRepoPath: mainRepo,
+        currentWorktreePath: existingWt.path,
+        currentBranch: branchName,
+        defaultBranch,
+      });
+      deps.updateFooterStatus(ctx, existingWt.path, mainRepo);
+      deps.updateWorktreeStatus?.(ctx, branchName, existingWt.path, mainRepo, defaultBranch);
+
+      return {
+        content: `Worktree for '${branchName}' already exists at ${existingWt.path}. Switched working directory to it.`,
+        details: {
+          branch: branchName,
+          path: existingWt.path,
+          mainRepo,
+        },
+      };
+    }
   }
 
   const baseDir = resolveBaseDir(mainRepo);
@@ -111,7 +184,7 @@ export async function createWorktree(
     // ENOENT — directory does not exist, which is expected
   }
 
-  // Check if branch already exists
+  // Check if branch already exists in git
   const branchCheck = await deps.exec(["rev-parse", "--verify", branchName], mainRepo);
 
   let addResult: ExecResult;
@@ -124,8 +197,6 @@ export async function createWorktree(
   if (addResult.code !== 0) {
     throw new Error(`Failed to create worktree: ${addResult.stderr.trim()}`);
   }
-
-  const defaultBranch = await detectDefaultBranchWithExec(deps.exec, mainRepo);
 
   // Update CWD & footers
   deps.setEffectiveCwd(worktreePath);
@@ -150,7 +221,7 @@ export async function createWorktree(
 }
 
 /**
- * switchWorktree — switch to an existing worktree or back to the default branch
+ * switchWorktree — switch to an existing worktree (or create it if it doesn't exist)
  */
 export async function switchWorktree(
   deps: OpsDeps,
@@ -162,7 +233,7 @@ export async function switchWorktree(
     throw new Error("Branch name cannot be empty");
   }
 
-  const activeCwd = (deps.getEffectiveCwd?.() || ctx.cwd);
+  const activeCwd = deps.getEffectiveCwd?.() || ctx.cwd;
   const mainRepo = await detectMainRepoWithExec(deps.exec, activeCwd);
   if (!mainRepo) {
     throw new Error("Not inside a git repository");
@@ -198,7 +269,8 @@ export async function switchWorktree(
   const worktrees = parseWorktreePorcelain(listResult.stdout);
   const wt = findWorktreeByBranch(worktrees, target);
   if (!wt) {
-    throw new Error(`No worktree found for branch '${target}'. Use worktree_create first.`);
+    // Auto-create worktree if it does not exist yet!
+    return createWorktree(deps, { branch: target }, ctx);
   }
 
   deps.setEffectiveCwd(wt.path);
@@ -240,7 +312,7 @@ export async function cleanupWorktree(
     throw new Error(`Invalid branch name: ${validationError}`);
   }
 
-  const activeCwd = (deps.getEffectiveCwd?.() || ctx.cwd);
+  const activeCwd = deps.getEffectiveCwd?.() || ctx.cwd;
   const mainRepo = await detectMainRepoWithExec(deps.exec, activeCwd);
   if (!mainRepo) {
     throw new Error("Not inside a git repository");

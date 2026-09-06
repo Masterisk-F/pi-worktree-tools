@@ -11,6 +11,7 @@ import {
 import { parseWorktreePorcelain } from "@harms-haus/pi-worktrees/src/git.js";
 import type { WorktreeInfo } from "@harms-haus/pi-worktrees/src/types.js";
 import {
+  listWorktrees,
   createWorktree,
   switchWorktree,
   cleanupWorktree,
@@ -44,20 +45,40 @@ export default function (pi: ExtensionAPI): void {
     getEffectiveCwd,
   };
 
+  // ── worktree_list ───────────────────────────────────────────────────
+  pi.registerTool({
+    name: "worktree_list",
+    label: "Worktree List",
+    description:
+      "List all existing git worktrees in the repository. ALWAYS use this tool instead of running `git worktree list` in bash.",
+    promptSnippet: "List git worktrees (prefer over `git worktree list` bash command)",
+    promptGuidelines: [
+      "ALWAYS use worktree_list to check existing worktrees. NEVER run `git worktree list` in bash.",
+    ],
+    parameters: Type.Object({}),
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      const result = await listWorktrees(deps, {}, ctx);
+      return {
+        content: [{ type: "text", text: result.content }],
+        details: result.details,
+      };
+    },
+  });
+
   // ── worktree_create ─────────────────────────────────────────────────
   pi.registerTool({
     name: "worktree_create",
     label: "Worktree Create",
     description:
-      "Create a git worktree for a branch (works for BOTH existing branches and new branches) and switch working directory to it. ALWAYS use this tool instead of running `git worktree add` or `git checkout` in bash.",
-    promptSnippet: "Create a git worktree for an existing or new branch and switch working directory (prefer over raw git commands)",
+      "Create a git worktree for a branch (works for BOTH existing branches and new branches) and switch working directory to it. If the worktree already exists, it switches to it. ALWAYS use this tool instead of running `git worktree add` or `git checkout` in bash.",
+    promptSnippet: "Create or switch to a git worktree for a branch (prefer over raw git commands)",
     promptGuidelines: [
-      "ALWAYS use worktree_create to open or create a worktree for any branch (whether the branch already exists or is new). NEVER use bash git commands like `git worktree add` or `git checkout`.",
+      "ALWAYS use worktree_create to open or create a worktree for any branch. NEVER use bash commands like `git worktree add`, `git branch`, or `git checkout`.",
     ],
     parameters: Type.Object({
       branch: Type.String({
         description:
-          "Branch name to checkout in a worktree (existing branch to checkout, or new branch name to create, e.g. feature/login or fix/bug)",
+          "Branch name to checkout in a worktree (existing branch or new branch to create, e.g. feature/login or fix/bug)",
       }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -74,14 +95,14 @@ export default function (pi: ExtensionAPI): void {
     name: "worktree_switch",
     label: "Worktree Switch",
     description:
-      "Switch working directory to an already existing worktree, or back to the default branch (main/master). If the worktree does not exist yet, use worktree_create instead. ALWAYS use this tool instead of `cd` or `git checkout` in bash.",
-    promptSnippet: "Switch between existing git worktrees or back to main (prefer over cd/checkout)",
+      "Switch working directory to an existing worktree, or back to the default branch (main/master). If the worktree does not exist yet, it automatically creates it and switches. ALWAYS use this tool instead of `cd` or `git checkout` in bash.",
+    promptSnippet: "Switch between git worktrees or back to main (auto-creates if missing; prefer over cd/checkout)",
     promptGuidelines: [
-      "ALWAYS use worktree_switch to move between existing worktrees or to return to the default branch (main/master). If the target branch worktree does not exist yet, use worktree_create.",
+      "ALWAYS use worktree_switch to move between worktrees or to return to the default branch (main/master). It automatically creates the worktree if it does not exist yet. NEVER use `cd` or `git checkout` in bash.",
     ],
     parameters: Type.Object({
       branch: Type.String({
-        description: "Branch name of an existing worktree, or default branch name (e.g. main/master)",
+        description: "Branch name of a worktree, or default branch name (e.g. main/master)",
       }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

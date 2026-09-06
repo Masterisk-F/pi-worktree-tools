@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+  listWorktrees,
   createWorktree,
   switchWorktree,
   cleanupWorktree,
@@ -66,6 +67,32 @@ describe("hasUncommittedChangesWithExec", () => {
     const exec = vi.fn().mockResolvedValue(ok(""));
     const dirty = await hasUncommittedChangesWithExec(exec, "/repo");
     expect(dirty).toBe(false);
+  });
+});
+
+describe("listWorktrees", () => {
+  it("lists all worktrees with formatted markdown", async () => {
+    const exec = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "list") {
+        return ok(
+          "worktree /repo\nHEAD 1234567890\nbranch refs/heads/main\n\n" +
+          "worktree /repo/.git/worktrees/feat\nHEAD 5678901234\nbranch refs/heads/feat\n\n",
+        );
+      }
+      if (args[0] === "symbolic-ref") return ok("refs/remotes/origin/main\n");
+      return ok();
+    });
+    const deps: OpsDeps = {
+      exec,
+      setEffectiveCwd: vi.fn(),
+      appendEntry: vi.fn(),
+      updateFooterStatus: vi.fn(),
+    };
+
+    const result = await listWorktrees(deps, {}, { cwd: "/repo" });
+    expect(result.content).toContain("Found 2 worktree(s):");
+    expect(result.content).toContain("**main** (main repo)");
+    expect(result.content).toContain("**feat**");
   });
 });
 
@@ -146,13 +173,20 @@ describe("createWorktree", () => {
     );
   });
 
-  it("#4 既存ディレクトリでエラー", async () => {
-    const { deps, statSync } = makeDeps();
-    statSync.mockReturnValue({ isDirectory: () => true });
+  it("#4 既存 worktree があれば自動切り替え", async () => {
+    const { deps, setEffectiveCwd } = makeDeps(async (args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "list") {
+        return ok(
+          "worktree /repo\nHEAD 1234\nbranch refs/heads/main\n\n" +
+          "worktree /repo/.git/worktrees/existing\nHEAD 5678\nbranch refs/heads/existing\n\n",
+        );
+      }
+      return ok();
+    });
 
-    await expect(
-      createWorktree(deps, { branch: "feature/foo" }, { cwd: "/repo" }),
-    ).rejects.toThrow("Directory already exists");
+    const result = await createWorktree(deps, { branch: "existing" }, { cwd: "/repo" });
+    expect(setEffectiveCwd).toHaveBeenCalledWith("/repo/.git/worktrees/existing");
+    expect(result.content).toContain("already exists");
   });
 });
 
@@ -172,13 +206,30 @@ describe("switchWorktree", () => {
           "worktree /repo/.git/worktrees/feat\nHEAD 5678\nbranch refs/heads/feat\n\n",
         );
       }
+      if (args[0] === "rev-parse") {
+        return fail("not found");
+      }
+      if (args[0] === "worktree" && args[1] === "add") {
+        return ok();
+      }
       return ok();
     });
     const setEffectiveCwd = vi.fn();
     const appendEntry = vi.fn();
     const updateFooterStatus = vi.fn();
+    const statSync = vi.fn().mockImplementation(() => {
+      const err = new Error("ENOENT");
+      (err as unknown as { code: string }).code = "ENOENT";
+      throw err;
+    });
 
-    return { deps: { exec, setEffectiveCwd, appendEntry, updateFooterStatus }, exec, setEffectiveCwd, appendEntry, updateFooterStatus };
+    return {
+      deps: { exec, setEffectiveCwd, appendEntry, updateFooterStatus, statSync },
+      exec,
+      setEffectiveCwd,
+      appendEntry,
+      updateFooterStatus,
+    };
   }
 
   it("#5 default branch (main) へ復帰", async () => {
@@ -197,11 +248,16 @@ describe("switchWorktree", () => {
     expect(result.details.branch).toBe("feat");
   });
 
-  it("#7 存在しない branch でエラー", async () => {
-    const { deps } = makeDeps();
-    await expect(switchWorktree(deps, { branch: "nonexistent" }, { cwd: "/repo" })).rejects.toThrow(
-      "No worktree found for branch 'nonexistent'",
+  it("#7 未存在の worktree は自動作成して切替", async () => {
+    const { deps, setEffectiveCwd, exec } = makeDeps();
+    const result = await switchWorktree(deps, { branch: "new-feature" }, { cwd: "/repo" });
+
+    expect(exec).toHaveBeenCalledWith(
+      ["worktree", "add", "-b", "new-feature", "/repo/.git/worktrees/new-feature"],
+      "/repo",
     );
+    expect(setEffectiveCwd).toHaveBeenCalledWith("/repo/.git/worktrees/new-feature");
+    expect(result.details.branch).toBe("new-feature");
   });
 });
 
