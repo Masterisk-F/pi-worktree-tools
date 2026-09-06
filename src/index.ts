@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { setEffectiveCwd, updateFooterStatus } from "@harms-haus/pi-cwd/src/state.js";
+import { setEffectiveCwd, getEffectiveCwd, updateFooterStatus } from "@harms-haus/pi-cwd/src/state.js";
 import { parseWorktreePorcelain } from "@harms-haus/pi-worktrees/src/git.js";
 import {
   createWorktree,
@@ -88,24 +88,6 @@ export default function (pi: ExtensionAPI): void {
   pi.on("session_shutdown", async (event, ctx) => {
     if (event.reason !== "quit" || !ctx.hasUI) return;
 
-    // 1. Scan session branch history for worktrees created via worktree_create tool
-    const createdBranches = new Set<string>();
-    for (const entry of ctx.sessionManager.getBranch()) {
-      if (
-        entry.type === "message" &&
-        entry.message.role === "toolResult" &&
-        entry.message.toolName === "worktree_create"
-      ) {
-        const branch = entry.message.details?.branch;
-        if (typeof branch === "string" && branch.length > 0) {
-          createdBranches.add(branch);
-        }
-      }
-    }
-
-    if (createdBranches.size === 0) return;
-
-    // 2. Check which of the created worktrees currently exist in git
     const mainRepo = await detectMainRepoWithExec(deps.exec, ctx.cwd);
     if (!mainRepo) return;
 
@@ -113,14 +95,56 @@ export default function (pi: ExtensionAPI): void {
     if (listResult.code !== 0) return;
 
     const worktrees = parseWorktreePorcelain(listResult.stdout);
-    const existing = worktrees.filter((wt) => createdBranches.has(wt.branchName));
+    if (worktrees.length <= 1) return; // Only main worktree exists
+
+    // Collect all branches and paths touched in this session
+    const touchedBranches = new Set<string>();
+    const touchedPaths = new Set<string>();
+
+    // 1. Current active working directory
+    const currentCwd = getEffectiveCwd();
+    if (currentCwd && currentCwd !== mainRepo) {
+      touchedPaths.add(currentCwd);
+    }
+
+    // 2. Scan session branch history for worktree tools and cwd-change entries
+    for (const entry of ctx.sessionManager.getBranch()) {
+      if (entry.type === "message" && entry.message.role === "toolResult") {
+        if (
+          entry.message.toolName === "worktree_create" ||
+          entry.message.toolName === "worktree_switch"
+        ) {
+          const branch = entry.message.details?.branch;
+          if (typeof branch === "string" && branch.length > 0) {
+            touchedBranches.add(branch);
+          }
+          const path = entry.message.details?.path;
+          if (typeof path === "string" && path.length > 0) {
+            touchedPaths.add(path);
+          }
+        }
+      } else if (entry.type === "custom" && entry.customType === "cwd-change") {
+        const cwd = (entry.data as { cwd?: string })?.cwd;
+        if (typeof cwd === "string" && cwd !== mainRepo) {
+          touchedPaths.add(cwd);
+        }
+      }
+    }
+
+    // 3. Match against currently existing worktrees (exclude main repo worktree)
+    const existing = worktrees.filter(
+      (wt) =>
+        wt.path !== mainRepo &&
+        (touchedBranches.has(wt.branchName) || touchedPaths.has(wt.path)),
+    );
+
     if (existing.length === 0) return;
 
-    // 3. Confirm deletion with user
+    // 4. Confirm deletion with user
     const names = existing.map((wt) => wt.branchName).join(", ");
     const confirmed = await ctx.ui.confirm(
       "Worktree Cleanup",
-      `このセッションで作成した以下の worktree が残っています。削除しますか？\n${names}`,
+      `このセッションで使用した以下の worktree が残っています。削除しますか？\n${names}`,
     );
 
     if (confirmed) {
