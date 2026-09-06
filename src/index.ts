@@ -22,9 +22,11 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: "worktree_create",
     label: "Worktree Create",
-    description: "Create a new git worktree from the default branch and switch working directory to it",
+    description:
+      "Create a new git worktree from the default branch and switch working directory to it. ALWAYS prefer this tool over running raw `git worktree add` commands in bash.",
+    promptSnippet: "Create a git worktree and switch working directory (prefer over raw git worktree add)",
     promptGuidelines: [
-      "Use worktree_create when you need to isolate multi-file changes in a dedicated git worktree.",
+      "ALWAYS use worktree_create instead of running raw `git worktree add` commands in bash when creating a worktree, so that Pi's working directory and footer status are properly updated.",
     ],
     parameters: Type.Object({
       branch: Type.String({ description: "Name of the branch to create, e.g. feature/my-feature" }),
@@ -42,9 +44,11 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: "worktree_switch",
     label: "Worktree Switch",
-    description: "Switch working directory to an existing git worktree or back to the default branch",
+    description:
+      "Switch working directory to an existing git worktree or back to the default branch. ALWAYS prefer this tool over running raw `cd` or `git checkout` commands in bash.",
+    promptSnippet: "Switch between git worktrees (prefer over cd/checkout)",
     promptGuidelines: [
-      "Use worktree_switch when you need to switch between existing worktrees or back to main.",
+      "ALWAYS use worktree_switch instead of running raw `cd` or `git checkout` commands in bash when switching between worktrees or returning to main.",
     ],
     parameters: Type.Object({
       branch: Type.String({ description: "Branch name or default branch name (e.g. main)" }),
@@ -62,9 +66,11 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: "worktree_cleanup",
     label: "Worktree Cleanup",
-    description: "Remove a git worktree and delete its branch if merged. Switches working directory back to main.",
+    description:
+      "Remove a git worktree and delete its branch if merged. Switches working directory back to main. ALWAYS prefer this tool over running raw `git worktree remove` commands in bash.",
+    promptSnippet: "Clean up a git worktree and return to main (prefer over raw git worktree remove)",
     promptGuidelines: [
-      "Use worktree_cleanup after completing work in a worktree to remove it and return to main.",
+      "ALWAYS use worktree_cleanup instead of running raw `git worktree remove` or `git branch -D` commands in bash to safely clean up worktrees and restore session directory.",
     ],
     parameters: Type.Object({
       branch: Type.String({ description: "Branch name of the worktree to remove" }),
