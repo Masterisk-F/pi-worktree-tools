@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createInterface } from "node:readline";
 import { Type } from "typebox";
 import { setEffectiveCwd, getEffectiveCwd, updateFooterStatus as updateCwdFooter } from "@harms-haus/pi-cwd/src/state.js";
 import {
@@ -21,6 +22,18 @@ import {
 
 export default function (pi: ExtensionAPI): void {
   const getCwd = () => getEffectiveCwd() || process.cwd();
+
+  // TUI is already torn down when session_shutdown fires, so ctx.ui.confirm()
+  // cannot render. Use readline on stdin/stdout instead.
+  function confirmOnExit(question: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      rl.question(question, (answer) => {
+        rl.close();
+        resolve(/^[yY]/.test(answer.trim()));
+      });
+    });
+  }
 
   const updateWorktreeStatus = (
     ctx: unknown,
@@ -138,7 +151,7 @@ export default function (pi: ExtensionAPI): void {
 
   // ── session_shutdown hook ──────────────────────────────────────────
   pi.on("session_shutdown", async (event, ctx) => {
-    if (event.reason !== "quit" || !ctx.hasUI) return;
+    if (event.reason !== "quit") return;
 
     // 1. Collect candidate paths to discover git repositories touched in this session
     const candidatePaths = new Set<string>();
@@ -222,23 +235,18 @@ export default function (pi: ExtensionAPI): void {
 
     if (toCleanup.length === 0) return;
 
-    // 5. Confirm deletion with user
+    // 5. Confirm deletion with user (readline-based: works after TUI shutdown)
     const names = toCleanup.map((item) => item.wt.branchName).join(", ");
-    const confirmed = await ctx.ui.confirm(
-      "Worktree Cleanup",
-      `このセッションで使用した以下の worktree が残っています。削除しますか？\n${names}`,
+    const confirmed = await confirmOnExit(
+      `\nRemove worktree(s) used in this session (${names})? [y/N] `,
     );
 
     if (confirmed) {
       for (const item of toCleanup) {
         try {
           await cleanupWorktree(deps, { branch: item.wt.branchName }, { cwd: item.repo });
-          ctx.ui.notify(`Deleted worktree '${item.wt.branchName}'`, "info");
         } catch (err) {
-          ctx.ui.notify(
-            `Failed to cleanup worktree '${item.wt.branchName}': ${(err as Error).message}`,
-            "warning",
-          );
+          // Ignore cleanup failures so process exit is not blocked
         }
       }
     }
