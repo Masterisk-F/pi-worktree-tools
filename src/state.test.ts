@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   getEffectiveCwd,
   setEffectiveCwd,
@@ -14,8 +14,12 @@ import {
   setDefaultBranch,
   resetWorktreeState,
   restoreFromBranch,
+  updateCwdFooter,
+  updateWorktreeFooter,
   CWD_CHANGE_TYPE,
   WORKTREE_CHANGE_TYPE,
+  CWD_STATUS_KEY,
+  WORKTREE_STATUS_KEY,
 } from "./state.js";
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 
@@ -31,13 +35,12 @@ describe("CWD State", () => {
     expect(getEffectiveCwd()).toBe("/new/path");
     expect(getOriginalCwd()).toBe("/initial");
   });
-});
-
 
   it("initOriginalCwd correctly updates originalCwd when resuming in a different directory", () => {
     initOriginalCwd("/resumed-dir");
     expect(getOriginalCwd()).toBe("/resumed-dir");
   });
+});
 
 describe("Worktree State", () => {
   beforeEach(() => {
@@ -64,6 +67,68 @@ describe("Worktree State", () => {
   });
 });
 
+describe("Footer Status", () => {
+  function makeMockContext(): { ctx: ExtensionContext; setStatus: ReturnType<typeof vi.fn> } {
+    const setStatus = vi.fn();
+    const ctx = {
+      hasUI: true,
+      ui: {
+        setStatus,
+        theme: {
+          fg: (_color: string, text: string) => text,
+        },
+      },
+    } as unknown as ExtensionContext;
+    return { ctx, setStatus };
+  }
+
+  it("clears CWD footer when effectiveCwd equals originalCwd", () => {
+    initOriginalCwd("/same");
+    setEffectiveCwd("/same");
+    const { ctx, setStatus } = makeMockContext();
+
+    updateCwdFooter(ctx);
+    expect(setStatus).toHaveBeenCalledWith(CWD_STATUS_KEY, undefined);
+  });
+
+  it("displays 📂 indicator when effectiveCwd differs from originalCwd", () => {
+    initOriginalCwd("/repo");
+    setEffectiveCwd("/repo/.worktrees/feat");
+    const { ctx, setStatus } = makeMockContext();
+
+    updateCwdFooter(ctx);
+    expect(setStatus).toHaveBeenCalledWith(
+      CWD_STATUS_KEY,
+      expect.stringContaining("📂 /repo/.worktrees/feat"),
+    );
+  });
+
+  it("clears Worktree footer when on main branch at main repo", () => {
+    setMainRepoPath("/repo");
+    setCurrentWorktreePath("/repo");
+    setCurrentBranch("main");
+    setDefaultBranch("main");
+    const { ctx, setStatus } = makeMockContext();
+
+    updateWorktreeFooter(ctx);
+    expect(setStatus).toHaveBeenCalledWith(WORKTREE_STATUS_KEY, undefined);
+  });
+
+  it("displays 🌳 indicator when on feature worktree", () => {
+    setMainRepoPath("/repo");
+    setCurrentWorktreePath("/repo/.worktrees/feature-x");
+    setCurrentBranch("feature/x");
+    setDefaultBranch("main");
+    const { ctx, setStatus } = makeMockContext();
+
+    updateWorktreeFooter(ctx);
+    expect(setStatus).toHaveBeenCalledWith(
+      WORKTREE_STATUS_KEY,
+      expect.stringContaining("🌳 feature/x"),
+    );
+  });
+});
+
 describe("restoreFromBranch", () => {
   function makeMockContext(entries: SessionEntry[]): ExtensionContext {
     return {
@@ -74,7 +139,6 @@ describe("restoreFromBranch", () => {
   }
 
   it("restores cwd from last valid cwd-change entry", () => {
-    // /tmp exists as directory on all Linux environments
     const entries: SessionEntry[] = [
       {
         type: "custom",
@@ -92,17 +156,16 @@ describe("restoreFromBranch", () => {
       {
         type: "custom",
         customType: CWD_CHANGE_TYPE,
-        data: { cwd: "/tmp" }, // valid
+        data: { cwd: "/tmp" },
       } as unknown as SessionEntry,
       {
         type: "custom",
         customType: CWD_CHANGE_TYPE,
-        data: { cwd: "/nonexistent/deleted/dir" }, // invalid
+        data: { cwd: "/nonexistent/deleted/dir" },
       } as unknown as SessionEntry,
     ];
 
     restoreFromBranch(makeMockContext(entries));
-    // Falls back to the earlier valid entry /tmp
     expect(getEffectiveCwd()).toBe("/tmp");
   });
 });
