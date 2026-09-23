@@ -33,6 +33,12 @@ describe("CWD State", () => {
   });
 });
 
+
+  it("initOriginalCwd correctly updates originalCwd when resuming in a different directory", () => {
+    initOriginalCwd("/resumed-dir");
+    expect(getOriginalCwd()).toBe("/resumed-dir");
+  });
+
 describe("Worktree State", () => {
   beforeEach(() => {
     resetWorktreeState();
