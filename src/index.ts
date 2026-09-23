@@ -147,7 +147,7 @@ export default function (pi: ExtensionAPI): void {
     ],
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-      const result = await listWorktrees(deps, {}, ctx);
+      const result = await listWorktrees(deps, {}, ctx as any);
       return {
         content: [{ type: "text", text: result.content }],
         details: result.details,
@@ -172,7 +172,7 @@ export default function (pi: ExtensionAPI): void {
       }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const result = await createWorktree(deps, params, ctx);
+      const result = await createWorktree(deps, params, ctx as any);
       const mainRepo = result.details.mainRepo as string | undefined;
       if (mainRepo) {
         await ensureWorktreesExcluded(deps.exec, mainRepo);
@@ -200,7 +200,7 @@ export default function (pi: ExtensionAPI): void {
       }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const result = await switchWorktree(deps, params, ctx);
+      const result = await switchWorktree(deps, params, ctx as any);
       return {
         content: [{ type: "text", text: result.content }],
         details: result.details,
@@ -222,7 +222,7 @@ export default function (pi: ExtensionAPI): void {
       branch: Type.String({ description: "Branch name of the worktree to remove" }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const result = await cleanupWorktree(deps, params, ctx);
+      const result = await cleanupWorktree(deps, params, ctx as any);
       return {
         content: [{ type: "text", text: result.content }],
         details: result.details,
