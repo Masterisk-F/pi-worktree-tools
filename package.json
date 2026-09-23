@@ -3,9 +3,17 @@
   "version": "0.2.0",
   "description": "pi-coding-agent extension: agent-callable git worktree tools with automatic cwd sync and shutdown cleanup",
   "type": "module",
-  "keywords": ["pi-package", "worktrees"],
+  "keywords": [
+    "pi-package",
+    "worktrees"
+  ],
   "main": "src/index.ts",
-  "files": ["src/**/*.ts", "!src/**/*.test.ts", "README.md", "LICENSE"],
+  "files": [
+    "src/**/*.ts",
+    "!src/**/*.test.ts",
+    "README.md",
+    "LICENSE"
+  ],
   "pi": {
     "extensions": [
       "./src/index.ts"
@@ -19,7 +27,7 @@
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.3",
-    "vitest": "^3.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^3.0.0"
   }
 }
