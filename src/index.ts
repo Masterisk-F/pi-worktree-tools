@@ -1,16 +1,26 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createInterface } from "node:readline/promises";
+import { isAbsolute, resolve, join } from "node:path";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { Type } from "typebox";
-import { setEffectiveCwd, getEffectiveCwd, updateFooterStatus as updateCwdFooter } from "@harms-haus/pi-cwd/src/state.js";
+
 import {
+  getEffectiveCwd,
+  setEffectiveCwd,
+  getOriginalCwd,
+  initOriginalCwd,
   setMainRepoPath,
   setDefaultBranch,
   setCurrentBranch,
   setCurrentWorktreePath,
-  updateFooterStatus as updateWorktreeFooter,
-} from "@harms-haus/pi-worktrees/src/state.js";
-import { parseWorktreePorcelain } from "@harms-haus/pi-worktrees/src/git.js";
-import type { WorktreeInfo } from "@harms-haus/pi-worktrees/src/types.js";
+  updateCwdFooter,
+  updateWorktreeFooter,
+  restoreFromBranch,
+  CWD_CHANGE_TYPE,
+  WORKTREE_CHANGE_TYPE,
+} from "./state.js";
+import { bashSingleQuote } from "./paths.js";
+import { parseWorktreePorcelain, detectGitDirWithExec, type WorktreeInfo } from "./git.js";
 import {
   listWorktrees,
   createWorktree,
@@ -20,9 +30,39 @@ import {
   type OpsDeps,
 } from "./ops.js";
 
-export default function (pi: ExtensionAPI): void {
-  const getCwd = () => getEffectiveCwd() || process.cwd();
+// File tools requiring a target path
+const FILE_TOOLS_REQUIRED_PATH = new Set(["read", "write", "edit"]);
 
+// File tools with an optional path argument (default to cwd)
+const FILE_TOOLS_OPTIONAL_PATH = new Set(["grep", "find", "ls"]);
+
+// Regex to rewrite cwd in system prompt
+const CWD_PROMPT_REGEX = /Current working directory: .+/;
+
+/**
+ * Ensure `.worktrees/` is registered in `.git/info/exclude` of the main repository.
+ * Local-only configuration that never gets committed to tracked `.gitignore`.
+ */
+async function ensureWorktreesExcluded(
+  exec: (args: string[], cwd?: string) => Promise<{ stdout: string; code: number }>,
+  mainRepo: string,
+): Promise<void> {
+  try {
+    const gitDir = await detectGitDirWithExec(exec as any, mainRepo);
+    const excludePath = join(gitDir, "info", "exclude");
+    if (!existsSync(excludePath)) return;
+
+    const content = readFileSync(excludePath, "utf-8");
+    if (!/(^|\n)\.worktrees\/?(\n|$)/.test(content)) {
+      appendFileSync(excludePath, (content.endsWith("\n") ? "" : "\n") + ".worktrees/\n");
+    }
+  } catch {
+    // Non-critical; ignore failures
+  }
+}
+
+export default function (pi: ExtensionAPI): void {
+  const getCwd = () => getEffectiveCwd();
 
   const updateWorktreeStatus = (
     ctx: unknown,
@@ -40,12 +80,60 @@ export default function (pi: ExtensionAPI): void {
 
   const deps: OpsDeps = {
     exec: (args, cwd) => pi.exec("git", args, { cwd: cwd || getCwd() }),
-    setEffectiveCwd,
+    setEffectiveCwd: (cwd) => setEffectiveCwd(cwd),
     appendEntry: (type, data) => pi.appendEntry(type, data),
-    updateFooterStatus: (ctx, cwd, original) => updateCwdFooter(ctx as any, cwd, original),
+    updateFooterStatus: (ctx, _cwd, _original) => updateCwdFooter(ctx as any),
     updateWorktreeStatus,
     getEffectiveCwd,
   };
+
+  // ── Tool call interception (makes all tools follow effectiveCwd) ─────
+  pi.on("tool_call", (event, _ctx) => {
+    if (getEffectiveCwd() === getOriginalCwd()) return undefined;
+
+    if (event.toolName === "bash") {
+      const input = event.input as { command: string };
+      input.command = `cd ${bashSingleQuote(getEffectiveCwd())} && ${input.command}`;
+    } else if (FILE_TOOLS_REQUIRED_PATH.has(event.toolName)) {
+      const input = event.input as { path: string };
+      if (!isAbsolute(input.path)) {
+        input.path = resolve(getEffectiveCwd(), input.path);
+      }
+    } else if (FILE_TOOLS_OPTIONAL_PATH.has(event.toolName)) {
+      const input = event.input as { path?: string };
+      if (input.path === undefined || input.path === "") {
+        input.path = getEffectiveCwd();
+      } else if (!isAbsolute(input.path)) {
+        input.path = resolve(getEffectiveCwd(), input.path);
+      }
+    }
+
+    return undefined;
+  });
+
+  // ── System prompt modification ──────────────────────────────────────
+  pi.on("before_agent_start", (event, _ctx) => {
+    if (getEffectiveCwd() === getOriginalCwd()) return undefined;
+    const modified = event.systemPrompt.replace(
+      CWD_PROMPT_REGEX,
+      `Current working directory: ${getEffectiveCwd()}`,
+    );
+    return { systemPrompt: modified };
+  });
+
+  // ── Session state restoration ───────────────────────────────────────
+  pi.on("session_start", (_event, ctx) => {
+    initOriginalCwd(ctx.cwd || process.cwd());
+    restoreFromBranch(ctx);
+    updateCwdFooter(ctx);
+    updateWorktreeFooter(ctx);
+  });
+
+  pi.on("session_tree", (_event, ctx) => {
+    restoreFromBranch(ctx);
+    updateCwdFooter(ctx);
+    updateWorktreeFooter(ctx);
+  });
 
   // ── worktree_list ───────────────────────────────────────────────────
   pi.registerTool({
@@ -85,6 +173,10 @@ export default function (pi: ExtensionAPI): void {
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const result = await createWorktree(deps, params, ctx);
+      const mainRepo = result.details.mainRepo as string | undefined;
+      if (mainRepo) {
+        await ensureWorktreesExcluded(deps.exec, mainRepo);
+      }
       return {
         content: [{ type: "text", text: result.content }],
         details: result.details,
@@ -173,14 +265,18 @@ export default function (pi: ExtensionAPI): void {
             candidatePaths.add(mainRepo);
           }
         }
-      } else if (entry.type === "custom" && entry.customType === "cwd-change") {
+      } else if (entry.type === "custom" && entry.customType === CWD_CHANGE_TYPE) {
         const cwd = (entry.data as { cwd?: string })?.cwd;
         if (typeof cwd === "string" && cwd.length > 0) {
           touchedPaths.add(cwd);
           candidatePaths.add(cwd);
         }
-      } else if (entry.type === "custom" && entry.customType === "worktree-change") {
-        const data = entry.data as { currentWorktreePath?: string; currentBranch?: string; mainRepoPath?: string };
+      } else if (entry.type === "custom" && entry.customType === WORKTREE_CHANGE_TYPE) {
+        const data = entry.data as {
+          currentWorktreePath?: string;
+          currentBranch?: string;
+          mainRepoPath?: string;
+        };
         if (data?.currentBranch) touchedBranches.add(data.currentBranch);
         if (data?.currentWorktreePath) {
           touchedPaths.add(data.currentWorktreePath);
@@ -236,7 +332,7 @@ export default function (pi: ExtensionAPI): void {
       for (const item of toCleanup) {
         try {
           await cleanupWorktree(deps, { branch: item.wt.branchName }, { cwd: item.repo });
-        } catch (err) {
+        } catch {
           // Ignore cleanup failures so process exit is not blocked
         }
       }
