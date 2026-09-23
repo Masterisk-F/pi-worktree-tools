@@ -23,7 +23,9 @@ function fail(stderr = "error", stdout = "", code = 1): ExecResult {
 describe("detectMainRepoWithExec", () => {
   it("detects main worktree path from porcelain output", async () => {
     const exec = vi.fn().mockResolvedValue(
-      ok("worktree /path/to/repo\nHEAD 1234\nbranch refs/heads/main\n\nworktree /path/to/repo/.git/worktrees/feat\nHEAD 5678\nbranch refs/heads/feat\n\n"),
+      ok(
+        "worktree /path/to/repo\nHEAD 1234\nbranch refs/heads/main\n\nworktree /path/to/repo/.worktrees/feat\nHEAD 5678\nbranch refs/heads/feat\n\n",
+      ),
     );
     const mainRepo = await detectMainRepoWithExec(exec, "/path/to/repo");
     expect(mainRepo).toBe("/path/to/repo");
@@ -76,7 +78,7 @@ describe("listWorktrees", () => {
       if (args[0] === "worktree" && args[1] === "list") {
         return ok(
           "worktree /repo\nHEAD 1234567890\nbranch refs/heads/main\n\n" +
-          "worktree /repo/.git/worktrees/feat\nHEAD 5678901234\nbranch refs/heads/feat\n\n",
+            "worktree /repo/.worktrees/feat\nHEAD 5678901234\nbranch refs/heads/feat\n\n",
         );
       }
       if (args[0] === "symbolic-ref") return ok("refs/remotes/origin/main\n");
@@ -94,10 +96,35 @@ describe("listWorktrees", () => {
     expect(result.content).toContain("**main** (main repo)");
     expect(result.content).toContain("**feat**");
   });
+
+  it("marks prunable worktrees clearly in list output", async () => {
+    const exec = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "list") {
+        return ok(
+          "worktree /repo\nHEAD 1234\nbranch refs/heads/main\n\n" +
+            "worktree /repo/.worktrees/broken\nHEAD 5678\nbranch refs/heads/broken\nprunable gitdir missing\n\n",
+        );
+      }
+      return ok();
+    });
+    const deps: OpsDeps = {
+      exec,
+      setEffectiveCwd: vi.fn(),
+      appendEntry: vi.fn(),
+      updateFooterStatus: vi.fn(),
+    };
+
+    const result = await listWorktrees(deps, {}, { cwd: "/repo" });
+    expect(result.content).toContain("broken");
+    expect(result.content).toContain("[prunable: metadata broken or checkout missing]");
+  });
 });
 
 describe("createWorktree", () => {
-  function makeDeps(customExec?: (args: string[], cwd?: string) => Promise<ExecResult>): {
+  function makeDeps(
+    customExec?: (args: string[], cwd?: string) => Promise<ExecResult>,
+    statMap: Record<string, boolean> = {},
+  ): {
     deps: OpsDeps;
     exec: ReturnType<typeof vi.fn>;
     setEffectiveCwd: ReturnType<typeof vi.fn>;
@@ -105,22 +132,31 @@ describe("createWorktree", () => {
     updateFooterStatus: ReturnType<typeof vi.fn>;
     statSync: ReturnType<typeof vi.fn>;
   } {
-    const exec = vi.fn().mockImplementation(customExec ?? (async (args: string[]) => {
-      if (args[0] === "worktree" && args[1] === "list") {
-        return ok("worktree /repo\nHEAD 1234\nbranch refs/heads/main\n\n");
-      }
-      if (args[0] === "rev-parse") {
-        return fail("branch not found"); // branch does not exist yet -> use -b
-      }
-      if (args[0] === "worktree" && args[1] === "add") {
-        return ok();
-      }
-      return ok();
-    }));
+    const exec = vi.fn().mockImplementation(
+      customExec ??
+        (async (args: string[]) => {
+          if (args[0] === "worktree" && args[1] === "list") {
+            return ok("worktree /repo\nHEAD 1234\nbranch refs/heads/main\n\n");
+          }
+          if (args[0] === "rev-parse" && args.includes("--git-common-dir")) {
+            return ok(".git\n");
+          }
+          if (args[0] === "rev-parse") {
+            return fail("branch not found"); // branch does not exist yet -> use -b
+          }
+          if (args[0] === "worktree" && args[1] === "add") {
+            return ok();
+          }
+          return ok();
+        }),
+    );
     const setEffectiveCwd = vi.fn();
     const appendEntry = vi.fn();
     const updateFooterStatus = vi.fn();
-    const statSync = vi.fn().mockImplementation(() => {
+    const statSync = vi.fn().mockImplementation((p: string) => {
+      if (statMap[p]) {
+        return { isDirectory: () => true };
+      }
       const err = new Error("ENOENT");
       (err as unknown as { code: string }).code = "ENOENT";
       throw err;
@@ -136,24 +172,27 @@ describe("createWorktree", () => {
     };
   }
 
-  it("#1 正常系: branch 指定で worktree 作成 & CWD 切替", async () => {
+  it("#1 正常系: branch 指定で worktree 作成（.worktrees/ 配下にフラット名で作成）", async () => {
     const { deps, exec, setEffectiveCwd, appendEntry, updateFooterStatus } = makeDeps();
     const result = await createWorktree(deps, { branch: "feature/foo" }, { cwd: "/repo" });
 
+    // Slashes flattened to hyphens: feature/foo -> feature-foo
+    // Created inside .worktrees/ at repo root, NOT .git/worktrees/
     expect(exec).toHaveBeenCalledWith(
-      ["worktree", "add", "-b", "feature/foo", "/repo/.git/worktrees/feature/foo"],
+      ["worktree", "add", "-b", "feature/foo", "/repo/.worktrees/feature-foo"],
       "/repo",
     );
-    expect(setEffectiveCwd).toHaveBeenCalledWith("/repo/.git/worktrees/feature/foo");
+    expect(setEffectiveCwd).toHaveBeenCalledWith("/repo/.worktrees/feature-foo");
     expect(appendEntry).toHaveBeenCalledWith("cwd-change", {
-      cwd: "/repo/.git/worktrees/feature/foo",
+      cwd: "/repo/.worktrees/feature-foo",
     });
     expect(updateFooterStatus).toHaveBeenCalledWith(
       { cwd: "/repo" },
-      "/repo/.git/worktrees/feature/foo",
+      "/repo/.worktrees/feature-foo",
       "/repo",
     );
     expect(result.details.branch).toBe("feature/foo");
+    expect(result.details.path).toBe("/repo/.worktrees/feature-foo");
   });
 
   it("#2 空ブランチ名でエラー", async () => {
@@ -173,25 +212,60 @@ describe("createWorktree", () => {
     );
   });
 
-  it("#4 既存 worktree があれば自動切り替え", async () => {
-    const { deps, setEffectiveCwd } = makeDeps(async (args: string[]) => {
-      if (args[0] === "worktree" && args[1] === "list") {
-        return ok(
-          "worktree /repo\nHEAD 1234\nbranch refs/heads/main\n\n" +
-          "worktree /repo/.git/worktrees/existing\nHEAD 5678\nbranch refs/heads/existing\n\n",
-        );
-      }
-      return ok();
-    });
+  it("#4 既存の健全な worktree があれば自動切り替え", async () => {
+    const existingPath = "/repo/.worktrees/existing";
+    const { deps, setEffectiveCwd } = makeDeps(
+      async (args: string[]) => {
+        if (args[0] === "worktree" && args[1] === "list") {
+          return ok(
+            "worktree /repo\nHEAD 1234\nbranch refs/heads/main\n\n" +
+              `worktree ${existingPath}\nHEAD 5678\nbranch refs/heads/existing\n\n`,
+          );
+        }
+        return ok();
+      },
+      { [existingPath]: true }, // exists on disk
+    );
 
     const result = await createWorktree(deps, { branch: "existing" }, { cwd: "/repo" });
-    expect(setEffectiveCwd).toHaveBeenCalledWith("/repo/.git/worktrees/existing");
+    expect(setEffectiveCwd).toHaveBeenCalledWith(existingPath);
     expect(result.content).toContain("already exists");
+  });
+
+  it("#5 破損した既存 worktree は prune して再作成", async () => {
+    const brokenPath = "/repo/.worktrees/damaged";
+    const { deps, exec, setEffectiveCwd } = makeDeps(
+      async (args: string[]) => {
+        if (args[0] === "worktree" && args[1] === "list") {
+          return ok(
+            "worktree /repo\nHEAD 1234\nbranch refs/heads/main\n\n" +
+              `worktree ${brokenPath}\nHEAD 5678\nbranch refs/heads/damaged\nprunable gitdir missing\n\n`,
+          );
+        }
+        if (args[0] === "rev-parse" && args.includes("--git-common-dir")) {
+          return ok(".git\n");
+        }
+        if (args[0] === "rev-parse") return fail();
+        return ok();
+      },
+      {}, // damagedPath does NOT exist on disk
+    );
+
+    const result = await createWorktree(deps, { branch: "damaged" }, { cwd: "/repo" });
+    // prune must be called to purge dead metadata
+    expect(exec).toHaveBeenCalledWith(["worktree", "prune"], "/repo");
+    // then new worktree added at safe path
+    expect(exec).toHaveBeenCalledWith(
+      ["worktree", "add", "-b", "damaged", "/repo/.worktrees/damaged"],
+      "/repo",
+    );
+    expect(setEffectiveCwd).toHaveBeenCalledWith("/repo/.worktrees/damaged");
+    expect(result.details.path).toBe("/repo/.worktrees/damaged");
   });
 });
 
 describe("switchWorktree", () => {
-  function makeDeps(): {
+  function makeDeps(statMap: Record<string, boolean> = {}): {
     deps: OpsDeps;
     exec: ReturnType<typeof vi.fn>;
     setEffectiveCwd: ReturnType<typeof vi.fn>;
@@ -203,21 +277,23 @@ describe("switchWorktree", () => {
       if (args[0] === "worktree" && args[1] === "list") {
         return ok(
           "worktree /repo\nHEAD 1234\nbranch refs/heads/main\n\n" +
-          "worktree /repo/.git/worktrees/feat\nHEAD 5678\nbranch refs/heads/feat\n\n",
+            "worktree /repo/.worktrees/feat\nHEAD 5678\nbranch refs/heads/feat\n\n",
         );
       }
-      if (args[0] === "rev-parse") {
-        return fail("not found");
+      if (args[0] === "rev-parse" && args.includes("--git-common-dir")) {
+        return ok(".git\n");
       }
-      if (args[0] === "worktree" && args[1] === "add") {
-        return ok();
-      }
+      if (args[0] === "rev-parse") return fail("not found");
+      if (args[0] === "worktree" && args[1] === "add") return ok();
       return ok();
     });
     const setEffectiveCwd = vi.fn();
     const appendEntry = vi.fn();
     const updateFooterStatus = vi.fn();
-    const statSync = vi.fn().mockImplementation(() => {
+    const statSync = vi.fn().mockImplementation((p: string) => {
+      if (statMap[p]) {
+        return { isDirectory: () => true };
+      }
       const err = new Error("ENOENT");
       (err as unknown as { code: string }).code = "ENOENT";
       throw err;
@@ -232,7 +308,7 @@ describe("switchWorktree", () => {
     };
   }
 
-  it("#5 default branch (main) へ復帰", async () => {
+  it("#6 default branch (main) へ復帰", async () => {
     const { deps, setEffectiveCwd } = makeDeps();
     const result = await switchWorktree(deps, { branch: "main" }, { cwd: "/repo" });
 
@@ -240,82 +316,107 @@ describe("switchWorktree", () => {
     expect(result.details.branch).toBe("main");
   });
 
-  it("#6 既存 worktree へ切替", async () => {
-    const { deps, setEffectiveCwd } = makeDeps();
+  it("#7 既存の健全な worktree へ切替", async () => {
+    const { deps, setEffectiveCwd } = makeDeps({ "/repo/.worktrees/feat": true });
     const result = await switchWorktree(deps, { branch: "feat" }, { cwd: "/repo" });
 
-    expect(setEffectiveCwd).toHaveBeenCalledWith("/repo/.git/worktrees/feat");
+    expect(setEffectiveCwd).toHaveBeenCalledWith("/repo/.worktrees/feat");
     expect(result.details.branch).toBe("feat");
   });
 
-  it("#7 未存在の worktree は自動作成して切替", async () => {
+  it("#8 未存在の worktree は自動作成して切替（.worktrees/ 配下）", async () => {
     const { deps, setEffectiveCwd, exec } = makeDeps();
     const result = await switchWorktree(deps, { branch: "new-feature" }, { cwd: "/repo" });
 
     expect(exec).toHaveBeenCalledWith(
-      ["worktree", "add", "-b", "new-feature", "/repo/.git/worktrees/new-feature"],
+      ["worktree", "add", "-b", "new-feature", "/repo/.worktrees/new-feature"],
       "/repo",
     );
-    expect(setEffectiveCwd).toHaveBeenCalledWith("/repo/.git/worktrees/new-feature");
+    expect(setEffectiveCwd).toHaveBeenCalledWith("/repo/.worktrees/new-feature");
     expect(result.details.branch).toBe("new-feature");
   });
 });
 
 describe("cleanupWorktree", () => {
-  function makeDeps(isDirty = false): {
+  function makeDeps(isDirty = false, missing = false): {
     deps: OpsDeps;
     exec: ReturnType<typeof vi.fn>;
     setEffectiveCwd: ReturnType<typeof vi.fn>;
   } {
+    const wtPath = "/repo/.worktrees/feat";
     const exec = vi.fn().mockImplementation(async (args: string[]) => {
       if (args[0] === "symbolic-ref") return ok("refs/remotes/origin/main\n");
       if (args[0] === "worktree" && args[1] === "list") {
         return ok(
           "worktree /repo\nHEAD 1234\nbranch refs/heads/main\n\n" +
-          "worktree /repo/.git/worktrees/feat\nHEAD 5678\nbranch refs/heads/feat\n\n",
+            `worktree ${wtPath}\nHEAD 5678\nbranch refs/heads/feat\n\n`,
         );
       }
       if (args[0] === "status") {
         return isDirty ? ok(" M dirty.txt\n") : ok("");
       }
-      if (args[0] === "worktree" && args[1] === "remove") {
-        return ok();
-      }
-      if (args[0] === "branch" && args[1] === "-d") {
-        return ok();
-      }
+      if (args[0] === "worktree" && args[1] === "remove") return ok();
+      if (args[0] === "branch" && args[1] === "-d") return ok();
       return ok();
     });
     const setEffectiveCwd = vi.fn();
     const appendEntry = vi.fn();
     const updateFooterStatus = vi.fn();
+    const statSync = vi.fn().mockImplementation((p: string) => {
+      if (!missing && p === wtPath) {
+        return { isDirectory: () => true };
+      }
+      const err = new Error("ENOENT");
+      (err as unknown as { code: string }).code = "ENOENT";
+      throw err;
+    });
 
-    return { deps: { exec, setEffectiveCwd, appendEntry, updateFooterStatus }, exec, setEffectiveCwd };
+    return {
+      deps: { exec, setEffectiveCwd, appendEntry, updateFooterStatus, statSync },
+      exec,
+      setEffectiveCwd,
+    };
   }
 
-  it("#8 未コミット変更ありでエラー（remove を呼ばない）", async () => {
-    const { deps, exec } = makeDeps(true); // dirty
+  it("#9 未コミット変更ありでエラー（remove を呼ばない）", async () => {
+    const { deps, exec } = makeDeps(true, false); // dirty
     await expect(cleanupWorktree(deps, { branch: "feat" }, { cwd: "/repo" })).rejects.toThrow(
       "has uncommitted changes",
     );
     expect(exec).not.toHaveBeenCalledWith(expect.arrayContaining(["remove"]), expect.anything());
   });
 
-  it("#9 正常削除: remove, prune, branch -d 実行 & CWD 復帰", async () => {
-    const { deps, exec, setEffectiveCwd } = makeDeps(false);
+  it("#10 正常削除: remove, prune, branch -d 実行 & CWD 復帰", async () => {
+    const { deps, exec, setEffectiveCwd } = makeDeps(false, false);
     const result = await cleanupWorktree(deps, { branch: "feat" }, { cwd: "/repo" });
 
-    expect(exec).toHaveBeenCalledWith(["worktree", "remove", "-f", "/repo/.git/worktrees/feat"], "/repo");
+    expect(exec).toHaveBeenCalledWith(
+      ["worktree", "remove", "-f", "/repo/.worktrees/feat"],
+      "/repo",
+    );
     expect(exec).toHaveBeenCalledWith(["worktree", "prune"], "/repo");
     expect(exec).toHaveBeenCalledWith(["branch", "-d", "feat"], "/repo");
     expect(setEffectiveCwd).toHaveBeenCalledWith("/repo");
     expect(result.details.branchDeleted).toBe(true);
   });
 
-  it("#10 存在しない worktree でエラー", async () => {
-    const { deps } = makeDeps(false);
+  it("#11 存在しない worktree でエラー", async () => {
+    const { deps } = makeDeps(false, false);
     await expect(cleanupWorktree(deps, { branch: "nonexistent" }, { cwd: "/repo" })).rejects.toThrow(
       "No worktree found for branch 'nonexistent'",
     );
+  });
+
+  it("#12 実体ディレクトリが既に欠落している場合も安全に prune してブランチ削除（エラーで落ちない）", async () => {
+    const { deps, exec, setEffectiveCwd } = makeDeps(false, true); // missing on disk
+    const result = await cleanupWorktree(deps, { branch: "feat" }, { cwd: "/repo" });
+
+    // remove must NOT be called on a non-existent path
+    expect(exec).not.toHaveBeenCalledWith(expect.arrayContaining(["remove"]), expect.anything());
+    // prune must be called to clear dead metadata
+    expect(exec).toHaveBeenCalledWith(["worktree", "prune"], "/repo");
+    expect(exec).toHaveBeenCalledWith(["branch", "-d", "feat"], "/repo");
+    expect(setEffectiveCwd).toHaveBeenCalledWith("/repo");
+    expect(result.details.branchDeleted).toBe(true);
   });
 });
