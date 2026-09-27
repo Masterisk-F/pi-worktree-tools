@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createInterface } from "node:readline/promises";
-import { isAbsolute, resolve, join } from "node:path";
+import { isAbsolute, resolve, join, relative } from "node:path";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { Type } from "typebox";
 
@@ -19,7 +19,7 @@ import {
   CWD_CHANGE_TYPE,
   WORKTREE_CHANGE_TYPE,
 } from "./state.js";
-import { bashSingleQuote } from "./paths.js";
+import { bashSingleQuote, resolveWorktreeBaseDir, isInside, escapeRegex } from "./paths.js";
 import { parseWorktreePorcelain, detectGitDirWithExec, type WorktreeInfo } from "./git.js";
 import {
   listWorktrees,
@@ -40,21 +40,36 @@ const FILE_TOOLS_OPTIONAL_PATH = new Set(["grep", "find", "ls"]);
 const CWD_PROMPT_REGEX = /Current working directory: .+/;
 
 /**
- * Ensure `.worktrees/` is registered in `.git/info/exclude` of the main repository.
+ * Ensure the resolved worktree base directory is registered in `.git/info/exclude`
+ * of the main repository (I5).
  * Local-only configuration that never gets committed to tracked `.gitignore`.
  */
-async function ensureWorktreesExcluded(
+export async function ensureWorktreesExcluded(
   exec: (args: string[], cwd?: string) => Promise<{ stdout: string; code: number }>,
   mainRepo: string,
+  baseDir?: string,
 ): Promise<void> {
   try {
     const gitDir = await detectGitDirWithExec(exec as any, mainRepo);
     const excludePath = join(gitDir, "info", "exclude");
     if (!existsSync(excludePath)) return;
 
+    // Resolve baseDir (defaults to settings/default if not provided)
+    const resolvedBase = baseDir ?? resolveWorktreeBaseDir(mainRepo, gitDir);
+
+    // Compute repo-relative pattern; if baseDir is outside mainRepo, do not add invalid gitignore rule
+    const rel = relative(mainRepo, resolvedBase);
+    if (!rel || rel.startsWith("..") || isAbsolute(rel)) {
+      return;
+    }
+
+    const pattern = (rel.endsWith("/") ? rel : rel + "/");
+    const escaped = escapeRegex(pattern);
+    const patternRegex = new RegExp(`(^|\\n)${escaped}(\\n|$)`);
+
     const content = readFileSync(excludePath, "utf-8");
-    if (!/(^|\n)\.worktrees\/?(\n|$)/.test(content)) {
-      appendFileSync(excludePath, (content.endsWith("\n") ? "" : "\n") + ".worktrees/\n");
+    if (!patternRegex.test(content)) {
+      appendFileSync(excludePath, (content.endsWith("\n") ? "" : "\n") + pattern + "\n");
     }
   } catch {
     // Non-critical; ignore failures
