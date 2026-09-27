@@ -168,4 +168,46 @@ describe("restoreFromBranch", () => {
     restoreFromBranch(makeMockContext(entries));
     expect(getEffectiveCwd()).toBe("/tmp");
   });
+
+  it("(I4) 消えたワークツリーからの復元で CWD が mainRepoPath に同期する", () => {
+    // Session branch history:
+    // Entry 1: cwd-change to /tmp (an older, still-existing directory)
+    // Entry 2: cwd-change to /missing-wt (most recent cwd, deleted out-of-band)
+    // Entry 3: worktree-change pointing to /missing-wt with mainRepoPath = /repo-root
+    // Note: /repo-root exists, /tmp exists, but /missing-wt is gone.
+    //
+    // WITHOUT I4 fix:
+    //   Loop 1 (CWD): scans backwards, sees /missing-wt is missing, keeps scanning,
+    //                 finds /tmp (still exists!), adopts effectiveCwd = /tmp.
+    //   Loop 2 (worktree): sees /missing-wt is missing, falls back to mainRepoPath = /repo-root.
+    //   Result: CWD is /tmp while worktree says /repo-root -> DIVERGENCE!
+    const entries: SessionEntry[] = [
+      {
+        type: "custom",
+        customType: CWD_CHANGE_TYPE,
+        data: { cwd: "/tmp" },
+      } as unknown as SessionEntry,
+      {
+        type: "custom",
+        customType: CWD_CHANGE_TYPE,
+        data: { cwd: "/missing-wt" },
+      } as unknown as SessionEntry,
+      {
+        type: "custom",
+        customType: WORKTREE_CHANGE_TYPE,
+        data: {
+          mainRepoPath: process.cwd(), // a real directory on disk
+          currentWorktreePath: "/missing-wt", // does NOT exist
+          currentBranch: "feature-missing",
+          defaultBranch: "main",
+        },
+      } as unknown as SessionEntry,
+    ];
+
+    restoreFromBranch(makeMockContext(entries));
+
+    // Under I4, CWD must NOT diverge to the older /tmp. It must be synchronized with mainRepoPath!
+    expect(getCurrentWorktreePath()).toBe(process.cwd());
+    expect(getEffectiveCwd()).toBe(process.cwd());
+  });
 });

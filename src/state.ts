@@ -216,6 +216,9 @@ export function restoreFromBranch(ctx: ExtensionContext): void {
       } else {
         currentWorktreePath = data.mainRepoPath;
         currentBranch = defaultBranch;
+        // If the worktree checkout was deleted out-of-band, synchronize CWD
+        // to mainRepoPath so status display and execution CWD do not diverge (I4)
+        effectiveCwd = data.mainRepoPath;
       }
       break;
     }
