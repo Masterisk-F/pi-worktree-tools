@@ -378,6 +378,26 @@ describe("switchWorktree", () => {
     expect(setEffectiveCwd).toHaveBeenCalledWith("/repo/.worktrees/new-feature");
     expect(result.details.branch).toBe("new-feature");
   });
+
+  it("#8b (Q4) 不正なブランチ名（.. / スペース等）で switchWorktree がエラー", async () => {
+    // Healthy worktree already exists for feat..foo, so the auto-create path is NOT reached
+    const { deps, exec } = makeDeps({ "/repo/.worktrees/feat..foo": true });
+    // Make git worktree list return feat..foo as an existing healthy worktree
+    exec.mockImplementation(async (args: string[]) => {
+      if (args[0] === "symbolic-ref") return ok("refs/remotes/origin/main\n");
+      if (args[0] === "worktree" && args[1] === "list") {
+        return ok(
+          "worktree /repo\nHEAD 1234\nbranch refs/heads/main\n\n" +
+            "worktree /repo/.worktrees/feat..foo\nHEAD 5678\nbranch refs/heads/feat..foo\n\n",
+        );
+      }
+      return ok();
+    });
+
+    await expect(switchWorktree(deps, { branch: "feat..foo" }, { cwd: "/repo" })).rejects.toThrow(
+      "Invalid branch name",
+    );
+  });
 });
 
 describe("cleanupWorktree", () => {

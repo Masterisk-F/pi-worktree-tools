@@ -266,6 +266,11 @@ export async function switchWorktree(
     throw new Error("Branch name cannot be empty");
   }
 
+  const validationError = validateBranchName(target);
+  if (validationError) {
+    throw new Error(`Invalid branch name: ${validationError}`);
+  }
+
   const activeCwd = deps.getEffectiveCwd?.() || ctx.cwd;
   const mainRepo = await detectMainRepoWithExec(deps.exec, activeCwd);
   if (!mainRepo) {
