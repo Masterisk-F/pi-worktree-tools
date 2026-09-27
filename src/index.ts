@@ -9,24 +9,25 @@ import {
   setEffectiveCwd,
   getOriginalCwd,
   initOriginalCwd,
-  setMainRepoPath,
-  setDefaultBranch,
-  setCurrentBranch,
-  setCurrentWorktreePath,
+  setWorktreeState,
   updateCwdFooter,
   updateWorktreeFooter,
   restoreFromBranch,
   CWD_CHANGE_TYPE,
   WORKTREE_CHANGE_TYPE,
 } from "./state.js";
-import { bashSingleQuote, resolveWorktreeBaseDir, isInside, escapeRegex } from "./paths.js";
-import { parseWorktreePorcelain, detectGitDirWithExec, type WorktreeInfo } from "./git.js";
+import { bashSingleQuote, resolveWorktreeBaseDir } from "./paths.js";
+import {
+  parseWorktreePorcelain,
+  detectGitDirWithExec,
+  detectMainRepoWithExec,
+  type WorktreeInfo,
+} from "./git.js";
 import {
   listWorktrees,
   createWorktree,
   switchWorktree,
   cleanupWorktree,
-  detectMainRepoWithExec,
   type OpsDeps,
 } from "./ops.js";
 
@@ -63,12 +64,10 @@ export async function ensureWorktreesExcluded(
       return;
     }
 
-    const pattern = (rel.endsWith("/") ? rel : rel + "/");
-    const escaped = escapeRegex(pattern);
-    const patternRegex = new RegExp(`(^|\\n)${escaped}(\\n|$)`);
+    const pattern = rel.endsWith("/") ? rel : rel + "/";
 
     const content = readFileSync(excludePath, "utf-8");
-    if (!patternRegex.test(content)) {
+    if (!content.split("\n").includes(pattern)) {
       appendFileSync(excludePath, (content.endsWith("\n") ? "" : "\n") + pattern + "\n");
     }
   } catch {
@@ -86,10 +85,7 @@ export default function (pi: ExtensionAPI): void {
     mainRepo: string,
     defaultBranch: string,
   ) => {
-    setMainRepoPath(mainRepo);
-    setDefaultBranch(defaultBranch);
-    setCurrentBranch(branch);
-    setCurrentWorktreePath(worktreePath);
+    setWorktreeState(mainRepo, worktreePath, branch, defaultBranch);
     updateWorktreeFooter(ctx as any);
   };
 
@@ -106,16 +102,20 @@ export default function (pi: ExtensionAPI): void {
   pi.on("tool_call", (event, _ctx) => {
     if (getEffectiveCwd() === getOriginalCwd()) return undefined;
 
+    // A tool call arriving without an input object (e.g. via MCP) would otherwise
+    // throw a TypeError here and take the whole session down.
+    const input = event.input as Record<string, unknown> | null | undefined;
+    if (!input || typeof input !== "object") return undefined;
+
     if (event.toolName === "bash") {
-      const input = event.input as { command: string };
-      input.command = `cd ${bashSingleQuote(getEffectiveCwd())} && ${input.command}`;
+      if (typeof input.command === "string") {
+        input.command = `cd ${bashSingleQuote(getEffectiveCwd())} && ${input.command}`;
+      }
     } else if (FILE_TOOLS_REQUIRED_PATH.has(event.toolName)) {
-      const input = event.input as { path?: unknown };
       if (typeof input.path === "string" && !isAbsolute(input.path)) {
         input.path = resolve(getEffectiveCwd(), input.path);
       }
     } else if (FILE_TOOLS_OPTIONAL_PATH.has(event.toolName)) {
-      const input = event.input as { path?: unknown };
       if (input.path === undefined || input.path === "") {
         input.path = getEffectiveCwd();
       } else if (typeof input.path === "string" && !isAbsolute(input.path)) {
@@ -216,6 +216,12 @@ export default function (pi: ExtensionAPI): void {
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const result = await switchWorktree(deps, params, ctx as any);
+      // switchWorktree may fall through to createWorktree internally, so this
+      // wrapper must exclude too or `.worktrees/` reappears in `git status` (B).
+      const mainRepo = result.details.mainRepo as string | undefined;
+      if (mainRepo) {
+        await ensureWorktreesExcluded(deps.exec, mainRepo);
+      }
       return {
         content: [{ type: "text", text: result.content }],
         details: result.details,

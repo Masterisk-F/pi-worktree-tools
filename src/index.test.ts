@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,9 +12,7 @@ import plugin, { ensureWorktreesExcluded } from "./index.js";
 import {
   initOriginalCwd,
   setEffectiveCwd,
-  getEffectiveCwd,
-  getOriginalCwd,
-  resetWorktreeState,
+  setWorktreeState,
 } from "./state.js";
 
 type EventHandler = (event: any, ctx: any) => Promise<any> | any;
@@ -52,7 +50,7 @@ describe("index.ts (Extension Harness)", () => {
   let pi: MockExtensionAPI;
 
   beforeEach(() => {
-    resetWorktreeState();
+    setWorktreeState("", "", "main", "main");
     initOriginalCwd("/orig/repo");
     setEffectiveCwd("/orig/repo");
     pi = makeMockPi();
@@ -99,6 +97,27 @@ describe("index.ts (Extension Harness)", () => {
         const evNull = { toolName, input: { path: null } };
         expect(() => handler?.(evNull, {})).not.toThrow();
       }
+    });
+
+    it("(guard) survives a tool call with no input object at all", () => {
+      const handler = pi.eventHandlers.get("tool_call")?.[0];
+      setEffectiveCwd("/orig/repo/.worktrees/feat");
+
+      for (const input of [undefined, null, "string", 42]) {
+        for (const toolName of ["bash", "read", "write", "edit", "grep", "find", "ls"]) {
+          expect(() => handler?.({ toolName, input }, {})).not.toThrow();
+        }
+      }
+    });
+
+    it("(guard) does not corrupt a bash call whose command is not a string", () => {
+      const handler = pi.eventHandlers.get("tool_call")?.[0];
+      setEffectiveCwd("/orig/repo/.worktrees/feat");
+
+      const ev: { toolName: string; input: unknown } = { toolName: "bash", input: {} };
+      handler?.(ev, {});
+      // Must NOT become "cd '/orig/...' && undefined"
+      expect((ev.input as { command?: unknown }).command).toBeUndefined();
     });
   });
 
@@ -188,6 +207,72 @@ describe("index.ts (Extension Harness)", () => {
         const content = readFileSync(excludePath, "utf-8");
         // Under I5, .wt/ must be excluded; currently it writes .worktrees/
         expect(content).toContain(".wt/\n");
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("does not duplicate an already-registered pattern", async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "pi-exclude-dupe-"));
+      try {
+        const gitDir = join(tempDir, ".git");
+        const { mkdirSync } = await import("node:fs");
+        mkdirSync(join(gitDir, "info"), { recursive: true });
+        const excludePath = join(gitDir, "info", "exclude");
+        writeFileSync(excludePath, "# Existing excludes\n.wt/\n");
+
+        const mockExec = vi.fn().mockImplementation(async (args: string[]) => {
+          if (args[0] === "rev-parse" && args[1] === "--git-common-dir") {
+            return { stdout: gitDir + "\n", code: 0 };
+          }
+          return { stdout: "", code: 0 };
+        });
+
+        const customBaseDir = join(tempDir, ".wt/");
+        await ensureWorktreesExcluded(mockExec, tempDir, customBaseDir);
+        await ensureWorktreesExcluded(mockExec, tempDir, customBaseDir);
+
+        const lines = readFileSync(excludePath, "utf-8").split("\n");
+        expect(lines.filter((l) => l === ".wt/").length).toBe(1);
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("worktree_switch -> .git/info/exclude (B)", () => {
+    it("excludes the base dir even when switchWorktree takes an internal path", async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "pi-switch-exclude-"));
+      try {
+        const gitDir = join(tempDir, ".git");
+        const { mkdirSync } = await import("node:fs");
+        mkdirSync(join(gitDir, "info"), { recursive: true });
+        const excludePath = join(gitDir, "info", "exclude");
+        writeFileSync(excludePath, "# existing\n");
+        const countLines = () =>
+          readFileSync(excludePath, "utf-8").split("\n").filter((l) => l.length > 0).length;
+
+        pi.exec.mockImplementation(async (_bin: string, args: string[]) => {
+          if (args[0] === "worktree" && args[1] === "list") {
+            return { stdout: `worktree ${tempDir}\nHEAD 1234\nbranch refs/heads/main\n\n`, code: 0 };
+          }
+          if (args[0] === "rev-parse" && args[1] === "--git-common-dir") {
+            return { stdout: gitDir + "\n", code: 0 };
+          }
+          return { stdout: "", code: 1 };
+        });
+
+        const switchTool = pi.registeredTools.get("worktree_switch");
+        const first = await switchTool.execute("c1", { branch: "main" }, null, null, {
+          cwd: tempDir,
+        });
+        expect(first.details.mainRepo).toBe(tempDir);
+        // Exactly one pattern appended — this only happens via ensureWorktreesExcluded.
+        expect(countLines()).toBe(2);
+
+        // Idempotent: a second switch must not append a duplicate.
+        await switchTool.execute("c2", { branch: "main" }, null, null, { cwd: tempDir });
+        expect(countLines()).toBe(2);
       } finally {
         rmSync(tempDir, { recursive: true, force: true });
       }

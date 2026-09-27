@@ -1,7 +1,6 @@
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { statSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { escapeRegex } from "./paths.js";
 
 // ============================================================================
 // Constants
@@ -65,43 +64,22 @@ export function setEffectiveCwd(cwd: string): void {
   effectiveCwd = cwd;
 }
 
-export function getMainRepoPath(): string {
-  return mainRepoPath;
-}
-
-export function setMainRepoPath(path: string): void {
-  mainRepoPath = path;
-}
-
-export function getCurrentWorktreePath(): string {
-  return currentWorktreePath;
-}
-
-export function setCurrentWorktreePath(path: string): void {
-  currentWorktreePath = path;
-}
-
-export function getCurrentBranch(): string {
-  return currentBranch;
-}
-
-export function setCurrentBranch(branch: string): void {
-  currentBranch = branch;
-}
-
-export function getDefaultBranch(): string {
-  return defaultBranch;
-}
-
-export function setDefaultBranch(branch: string): void {
-  defaultBranch = branch;
-}
-
-export function resetWorktreeState(): void {
-  mainRepoPath = "";
-  currentWorktreePath = "";
-  currentBranch = "main";
-  defaultBranch = "main";
+/**
+ * Write the four footer-state fields in one place. The state itself stays
+ * module-private; `updateWorktreeFooter` is the only reader.
+ *
+ * Argument order mirrors `WorktreeChangeData`.
+ */
+export function setWorktreeState(
+  repoPath: string,
+  worktreePath: string,
+  branchName: string,
+  fallbackBranch: string,
+): void {
+  mainRepoPath = repoPath;
+  currentWorktreePath = worktreePath;
+  currentBranch = branchName;
+  defaultBranch = fallbackBranch;
 }
 
 // ============================================================================
@@ -121,9 +99,8 @@ export function updateCwdFooter(ctx: ExtensionContext): void {
   }
 
   const home = process.env.HOME || homedir();
-  const displayPath = home
-    ? effectiveCwd.replace(new RegExp(`^${escapeRegex(home)}`), "~")
-    : effectiveCwd;
+  const displayPath =
+    home && effectiveCwd.startsWith(home) ? "~" + effectiveCwd.slice(home.length) : effectiveCwd;
 
   ctx.ui.setStatus(CWD_STATUS_KEY, ctx.ui.theme.fg("accent", `📂 ${displayPath}`));
 }

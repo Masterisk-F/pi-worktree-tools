@@ -28,19 +28,7 @@ describe("flatBranchDirName", () => {
     expect(flatBranchDirName("feature-login")).toBe("feature-login");
   });
 
-  it("(I2) appends a deterministic short hash when the base flat name is already taken", () => {
-    // When isTaken returns true for "feature-login", it disambiguates
-    const isTaken = (dirName: string) => dirName === "feature-login";
-
-    const nameForSlash = flatBranchDirName("feature/login", isTaken);
-    const nameForHyphen = flatBranchDirName("feature-login", isTaken);
-
-    // Both base to "feature-login", but isTaken returns true, so disambiguation triggers
-    expect(nameForSlash.startsWith("feature-login-")).toBe(true);
-    expect(nameForHyphen.startsWith("feature-login-")).toBe(true);
-    // Crucially: they must resolve to DIFFERENT directories (collision solved)
-    expect(nameForSlash).not.toBe(nameForHyphen);
-  });
+  // Collision handling lives in ops.ts (free-suffix probe) and is covered there.
 });
 
 describe("bashSingleQuote", () => {

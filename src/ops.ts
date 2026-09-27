@@ -5,12 +5,10 @@ import { validateBranchName } from "./validation.js";
 import {
   parseWorktreePorcelain,
   findWorktreeByBranch,
-  getMainWorktree,
   detectMainRepoWithExec,
   detectDefaultBranchWithExec,
   detectGitDirWithExec,
   hasUncommittedChangesWithExec,
-  type WorktreeInfo,
 } from "./git.js";
 import { resolveWorktreeBaseDir, flatBranchDirName } from "./paths.js";
 
@@ -39,45 +37,30 @@ export interface WorktreeToolResult {
   details: Record<string, unknown>;
 }
 
-// Re-export git helpers so callers (index.ts / tests) don't need a separate import
-export {
-  detectMainRepoWithExec,
-  detectDefaultBranchWithExec,
-  hasUncommittedChangesWithExec,
-};
-
-// ============================================================================
-// Pure Helpers
-// ============================================================================
-
-/**
- * Return the directory the session should move to after removing `removedPath`,
- * or null to keep the current effective CWD untouched.
- *
- * Removing one worktree must not silently teleport a session working in a
- * *different* worktree back to the repository root (I1).
- * When `effectiveCwd` is undefined/empty (legacy / unmocked tests), falls back
- * to the main repo for backward compatibility.
- */
-export function resolveEffectiveCwdForRemoval(
-  mainRepo: string,
-  removedPath: string,
-  effectiveCwd: string | undefined,
-  defaultBranch: string,
-): { cwd: string; branch: string } | null {
-  if (!effectiveCwd) {
-    return { cwd: mainRepo, branch: defaultBranch };
-  }
-  if (effectiveCwd === removedPath) {
-    return { cwd: mainRepo, branch: defaultBranch };
-  }
-  // Session is working elsewhere (another worktree or the main repo) -> leave CWD untouched
-  return null;
-}
-
 // ============================================================================
 // Tool Operations
 // ============================================================================
+
+/**
+ * Commit a worktree change: update CWD, session entries, and both footers.
+ * The 5 call sites in this file previously repeated this sequence verbatim.
+ */
+function commitWorktreeChange(
+  deps: OpsDeps,
+  ctx: unknown,
+  args: { mainRepo: string; cwd: string; branch: string; defaultBranch: string },
+): void {
+  deps.setEffectiveCwd(args.cwd);
+  deps.appendEntry("cwd-change", { cwd: args.cwd });
+  deps.appendEntry("worktree-change", {
+    mainRepoPath: args.mainRepo,
+    currentWorktreePath: args.cwd,
+    currentBranch: args.branch,
+    defaultBranch: args.defaultBranch,
+  });
+  deps.updateFooterStatus(ctx, args.cwd, args.mainRepo);
+  deps.updateWorktreeStatus?.(ctx, args.branch, args.cwd, args.mainRepo, args.defaultBranch);
+}
 
 /**
  * listWorktrees — list all existing worktrees
@@ -162,10 +145,9 @@ export async function createWorktree(
   const checkStat = deps.statSync ?? statSync;
 
   // Check if worktree already exists in git worktree list
-  let existingWorktrees: WorktreeInfo[] = [];
   const listResult = await deps.exec(["worktree", "list", "--porcelain"], mainRepo);
   if (listResult.code === 0) {
-    existingWorktrees = parseWorktreePorcelain(listResult.stdout);
+    const existingWorktrees = parseWorktreePorcelain(listResult.stdout);
     const existingWt = findWorktreeByBranch(existingWorktrees, branchName);
 
     if (existingWt) {
@@ -175,16 +157,12 @@ export async function createWorktree(
 
       if (!isDamaged) {
         // Worktree already exists and is healthy -> switch directly
-        deps.setEffectiveCwd(existingWt.path);
-        deps.appendEntry("cwd-change", { cwd: existingWt.path });
-        deps.appendEntry("worktree-change", {
-          mainRepoPath: mainRepo,
-          currentWorktreePath: existingWt.path,
-          currentBranch: branchName,
+        commitWorktreeChange(deps, ctx, {
+          mainRepo,
+          cwd: existingWt.path,
+          branch: branchName,
           defaultBranch,
         });
-        deps.updateFooterStatus(ctx, existingWt.path, mainRepo);
-        deps.updateWorktreeStatus?.(ctx, branchName, existingWt.path, mainRepo, defaultBranch);
 
         return {
           content: `Worktree for '${branchName}' already exists at ${existingWt.path}. Switched working directory to it.`,
@@ -205,22 +183,13 @@ export async function createWorktree(
   // Resolve safe base directory outside of .git
   const gitDir = await detectGitDirWithExec(deps.exec, mainRepo);
   const baseDir = resolveWorktreeBaseDir(mainRepo, gitDir);
-  // Disambiguate path if another branch's worktree already occupies the base flat name (I2)
-  const flatDirName = flatBranchDirName(branchName, (name) =>
-    existingWorktrees.some(
-      (w) => !w.prunable && w.branchName !== branchName && w.path === join(baseDir, name),
-    ),
-  );
-  const worktreePath = join(baseDir, flatDirName);
-
-  try {
-    checkStat(worktreePath);
-    throw new Error(`Directory already exists: ${worktreePath}`);
-  } catch (err: unknown) {
-    if ((err as Error).message.startsWith("Directory already exists")) {
-      throw err;
-    }
-    // ENOENT — directory does not exist, which is expected
+  const baseName = flatBranchDirName(branchName);
+  // Another branch may already own `<baseDir>/<flat name>` (e.g. `feature-login`
+  // vs `feature/login`). Probe for the first free suffix rather than guessing
+  // from the worktree list, which only knows about live worktrees (I2).
+  let worktreePath = join(baseDir, baseName);
+  for (let n = 2; !isWorktreeMissing(worktreePath, checkStat); n++) {
+    worktreePath = join(baseDir, `${baseName}-${n}`);
   }
 
   // Check if branch already exists in git
@@ -238,16 +207,12 @@ export async function createWorktree(
   }
 
   // Update CWD & footers
-  deps.setEffectiveCwd(worktreePath);
-  deps.appendEntry("cwd-change", { cwd: worktreePath });
-  deps.appendEntry("worktree-change", {
-    mainRepoPath: mainRepo,
-    currentWorktreePath: worktreePath,
-    currentBranch: branchName,
+  commitWorktreeChange(deps, ctx, {
+    mainRepo,
+    cwd: worktreePath,
+    branch: branchName,
     defaultBranch,
   });
-  deps.updateFooterStatus(ctx, worktreePath, mainRepo);
-  deps.updateWorktreeStatus?.(ctx, branchName, worktreePath, mainRepo, defaultBranch);
 
   return {
     content: `Created worktree for '${branchName}' at ${worktreePath} and switched working directory.`,
@@ -286,16 +251,12 @@ export async function switchWorktree(
   const defaultBranch = await detectDefaultBranchWithExec(deps.exec, mainRepo);
 
   if (target === defaultBranch || target === "main" || target === "master") {
-    deps.setEffectiveCwd(mainRepo);
-    deps.appendEntry("cwd-change", { cwd: mainRepo });
-    deps.appendEntry("worktree-change", {
-      mainRepoPath: mainRepo,
-      currentWorktreePath: mainRepo,
-      currentBranch: defaultBranch,
+    commitWorktreeChange(deps, ctx, {
+      mainRepo,
+      cwd: mainRepo,
+      branch: defaultBranch,
       defaultBranch,
     });
-    deps.updateFooterStatus(ctx, mainRepo, mainRepo);
-    deps.updateWorktreeStatus?.(ctx, defaultBranch, mainRepo, mainRepo, defaultBranch);
     return {
       content: `Switched to default branch (${defaultBranch}) at ${mainRepo}.`,
       details: {
@@ -327,16 +288,12 @@ export async function switchWorktree(
     return createWorktree(deps, { branch: target }, ctx);
   }
 
-  deps.setEffectiveCwd(wt.path);
-  deps.appendEntry("cwd-change", { cwd: wt.path });
-  deps.appendEntry("worktree-change", {
-    mainRepoPath: mainRepo,
-    currentWorktreePath: wt.path,
-    currentBranch: target,
+  commitWorktreeChange(deps, ctx, {
+    mainRepo,
+    cwd: wt.path,
+    branch: target,
     defaultBranch,
   });
-  deps.updateFooterStatus(ctx, wt.path, mainRepo);
-  deps.updateWorktreeStatus?.(ctx, target, wt.path, mainRepo, defaultBranch);
 
   return {
     content: `Switched to worktree '${target}' at ${wt.path}.`,
@@ -416,25 +373,17 @@ export async function cleanupWorktree(
   const branchResult = await deps.exec(["branch", "-d", target], mainRepo);
   const branchDeleted = branchResult.code === 0;
 
-  // Switch CWD back to main repo only if the removed worktree was the active one (I1)
-  const next = resolveEffectiveCwdForRemoval(
-    mainRepo,
-    wt.path,
-    deps.getEffectiveCwd?.(),
-    defaultBranch,
-  );
-
-  if (next) {
-    deps.setEffectiveCwd(next.cwd);
-    deps.appendEntry("cwd-change", { cwd: next.cwd });
-    deps.appendEntry("worktree-change", {
-      mainRepoPath: mainRepo,
-      currentWorktreePath: next.cwd,
-      currentBranch: next.branch,
+  // Removing one worktree must not teleport a session working in a *different*
+  // worktree back to the repository root (I1). Only move when we removed the
+  // active one (or when there is no effective CWD, legacy/unmocked callers).
+  const currentCwd = deps.getEffectiveCwd?.();
+  if (!currentCwd || currentCwd === wt.path) {
+    commitWorktreeChange(deps, ctx, {
+      mainRepo,
+      cwd: mainRepo,
+      branch: defaultBranch,
       defaultBranch,
     });
-    deps.updateFooterStatus(ctx, next.cwd, mainRepo);
-    deps.updateWorktreeStatus?.(ctx, next.branch, next.cwd, mainRepo, defaultBranch);
   }
 
   return {

@@ -4,15 +4,7 @@ import {
   setEffectiveCwd,
   getOriginalCwd,
   initOriginalCwd,
-  getMainRepoPath,
-  setMainRepoPath,
-  getCurrentBranch,
-  setCurrentBranch,
-  getCurrentWorktreePath,
-  setCurrentWorktreePath,
-  getDefaultBranch,
-  setDefaultBranch,
-  resetWorktreeState,
+  setWorktreeState,
   restoreFromBranch,
   updateCwdFooter,
   updateWorktreeFooter,
@@ -43,27 +35,35 @@ describe("CWD State", () => {
 });
 
 describe("Worktree State", () => {
-  beforeEach(() => {
-    resetWorktreeState();
+  function makeMockContext(): { ctx: ExtensionContext; setStatus: ReturnType<typeof vi.fn> } {
+    const setStatus = vi.fn();
+    const ctx = {
+      hasUI: true,
+      ui: {
+        setStatus,
+        theme: { fg: (_color: string, text: string) => text },
+      },
+    } as unknown as ExtensionContext;
+    return { ctx, setStatus };
+  }
+
+  it("setWorktreeState feeds the footer: feature worktree shows 🌳", () => {
+    setWorktreeState("/repo", "/repo/.worktrees/feat", "feat", "master");
+    const { ctx, setStatus } = makeMockContext();
+
+    updateWorktreeFooter(ctx);
+    expect(setStatus).toHaveBeenCalledWith(
+      WORKTREE_STATUS_KEY,
+      expect.stringContaining("🌳 feat"),
+    );
   });
 
-  it("stores main repo path and branch info", () => {
-    setMainRepoPath("/repo");
-    setCurrentWorktreePath("/repo/.worktrees/feat");
-    setCurrentBranch("feat");
-    setDefaultBranch("master");
+  it("setWorktreeState feeds the footer: main repo at main branch clears 🌳", () => {
+    setWorktreeState("/repo", "/repo", "main", "main");
+    const { ctx, setStatus } = makeMockContext();
 
-    expect(getMainRepoPath()).toBe("/repo");
-    expect(getCurrentWorktreePath()).toBe("/repo/.worktrees/feat");
-    expect(getCurrentBranch()).toBe("feat");
-    expect(getDefaultBranch()).toBe("master");
-  });
-
-  it("reset restores defaults", () => {
-    setCurrentBranch("something");
-    resetWorktreeState();
-    expect(getCurrentBranch()).toBe("main");
-    expect(getMainRepoPath()).toBe("");
+    updateWorktreeFooter(ctx);
+    expect(setStatus).toHaveBeenCalledWith(WORKTREE_STATUS_KEY, undefined);
   });
 });
 
@@ -104,10 +104,7 @@ describe("Footer Status", () => {
   });
 
   it("clears Worktree footer when on main branch at main repo", () => {
-    setMainRepoPath("/repo");
-    setCurrentWorktreePath("/repo");
-    setCurrentBranch("main");
-    setDefaultBranch("main");
+    setWorktreeState("/repo", "/repo", "main", "main");
     const { ctx, setStatus } = makeMockContext();
 
     updateWorktreeFooter(ctx);
@@ -115,10 +112,7 @@ describe("Footer Status", () => {
   });
 
   it("displays 🌳 indicator when on feature worktree", () => {
-    setMainRepoPath("/repo");
-    setCurrentWorktreePath("/repo/.worktrees/feature-x");
-    setCurrentBranch("feature/x");
-    setDefaultBranch("main");
+    setWorktreeState("/repo", "/repo/.worktrees/feature-x", "feature/x", "main");
     const { ctx, setStatus } = makeMockContext();
 
     updateWorktreeFooter(ctx);
@@ -206,8 +200,17 @@ describe("restoreFromBranch", () => {
 
     restoreFromBranch(makeMockContext(entries));
 
+    // Loop 2 must take the missing-checkout fallback: worktree state becomes
+    // main-on-mainRepoPath, so the 🌳 footer clears. (If restore had adopted
+    // the stale feature-branch state instead, it would still show 🌳.)
+    const setStatus = vi.fn();
+    updateWorktreeFooter({
+      hasUI: true,
+      ui: { setStatus, theme: { fg: (_c: string, t: string) => t } },
+    } as unknown as ExtensionContext);
+    expect(setStatus).toHaveBeenCalledWith(WORKTREE_STATUS_KEY, undefined);
+
     // Under I4, CWD must NOT diverge to the older /tmp. It must be synchronized with mainRepoPath!
-    expect(getCurrentWorktreePath()).toBe(process.cwd());
     expect(getEffectiveCwd()).toBe(process.cwd());
   });
 });

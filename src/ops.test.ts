@@ -4,12 +4,13 @@ import {
   createWorktree,
   switchWorktree,
   cleanupWorktree,
+  type OpsDeps,
+} from "./ops.js";
+import {
   detectMainRepoWithExec,
   detectDefaultBranchWithExec,
   hasUncommittedChangesWithExec,
-  resolveEffectiveCwdForRemoval,
-  type OpsDeps,
-} from "./ops.js";
+} from "./git.js";
 import type { ExecResult } from "@earendil-works/pi-coding-agent";
 
 // Helper to make dummy ExecResult
@@ -20,48 +21,6 @@ function ok(stdout = "", stderr = ""): ExecResult {
 function fail(stderr = "error", stdout = "", code = 1): ExecResult {
   return { stdout, stderr, code, killed: false };
 }
-
-describe("resolveEffectiveCwdForRemoval (I1)", () => {
-  const main = "/repo";
-  const defaultBranch = "main";
-
-  it("returns main repo when effectiveCwd was the removed worktree", () => {
-    const next = resolveEffectiveCwdForRemoval(
-      main,
-      "/repo/.worktrees/feature-a",
-      "/repo/.worktrees/feature-a",
-      defaultBranch,
-    );
-    expect(next).toEqual({ cwd: main, branch: defaultBranch });
-  });
-
-  it("returns null when session is in a DIFFERENT worktree (preserves active context)", () => {
-    const next = resolveEffectiveCwdForRemoval(
-      main,
-      "/repo/.worktrees/feature-b",
-      "/repo/.worktrees/feature-a",
-      defaultBranch,
-    );
-    expect(next).toBeNull();
-  });
-
-  it("returns main repo fallback when effectiveCwd is undefined/empty (legacy / unmocked tests)", () => {
-    expect(resolveEffectiveCwdForRemoval(main, "/repo/.worktrees/feature-a", undefined, defaultBranch))
-      .toEqual({ cwd: main, branch: defaultBranch });
-    expect(resolveEffectiveCwdForRemoval(main, "/repo/.worktrees/feature-a", "", defaultBranch))
-      .toEqual({ cwd: main, branch: defaultBranch });
-  });
-
-  it("returns null when session is already at the main repo (cleaning a background worktree)", () => {
-    const next = resolveEffectiveCwdForRemoval(
-      main,
-      "/repo/.worktrees/feature-b",
-      main,
-      defaultBranch,
-    );
-    expect(next).toBeNull();
-  });
-});
 
 describe("detectMainRepoWithExec", () => {
   it("detects main worktree path from porcelain output", async () => {
@@ -332,11 +291,38 @@ describe("createWorktree", () => {
     const result = await createWorktree(deps, { branch: "feature/login" }, { cwd: "/repo" });
 
     // Under I2, it must NOT use /repo/.worktrees/feature-login (which is taken).
-    // Instead it uses a disambiguated hash suffix.
-    expect(result.details.path).not.toBe(existingHyphenPath);
-    expect((result.details.path as string).startsWith("/repo/.worktrees/feature-login-")).toBe(true);
+    // Instead it probes the first free numeric suffix.
+    expect(result.details.path).toBe("/repo/.worktrees/feature-login-2");
     expect(exec).toHaveBeenCalledWith(
       expect.arrayContaining(["worktree", "add", "-b", "feature/login", result.details.path]),
+      "/repo",
+    );
+  });
+
+  it("#5c (I2) ディスクに存在するが worktree list に無い占有ディレクトリでも作成できる", async () => {
+    // A directory sits at the base flat name but has NO registered worktree
+    // (abandoned checkout, or a `prunable` entry the old `!w.prunable` filter
+    // excluded). The old predicate then returned false, and the old code fell
+    // through to a hard `Directory already exists:` throw.
+    const occupiedPath = "/repo/.worktrees/feature-login";
+    const { deps, exec } = makeDeps(
+      async (args: string[]) => {
+        if (args[0] === "worktree" && args[1] === "list") {
+          // No entry at occupiedPath — only the main repo.
+          return ok("worktree /repo\nHEAD 1234\nbranch refs/heads/main\n\n");
+        }
+        if (args[0] === "rev-parse" && args.includes("--git-common-dir")) return ok(".git\n");
+        if (args[0] === "rev-parse") return fail(); // branch doesn't exist -> use -b
+        return ok();
+      },
+      { [occupiedPath]: true }, // but the directory EXISTS on disk
+    );
+
+    const result = await createWorktree(deps, { branch: "feature-login" }, { cwd: "/repo" });
+
+    expect(result.details.path).toBe(occupiedPath + "-2");
+    expect(exec).toHaveBeenCalledWith(
+      expect.arrayContaining(["worktree", "add", "-b", "feature-login", occupiedPath + "-2"]),
       "/repo",
     );
   });
@@ -440,6 +426,8 @@ describe("cleanupWorktree", () => {
     deps: OpsDeps;
     exec: ReturnType<typeof vi.fn>;
     setEffectiveCwd: ReturnType<typeof vi.fn>;
+    appendEntry: ReturnType<typeof vi.fn>;
+    updateFooterStatus: ReturnType<typeof vi.fn>;
   } {
     const wtPath = "/repo/.worktrees/feat";
     const exec = vi.fn().mockImplementation(async (args: string[]) => {
@@ -533,5 +521,24 @@ describe("cleanupWorktree", () => {
     expect(setEffectiveCwd).not.toHaveBeenCalled();
     expect(appendEntry).not.toHaveBeenCalledWith("cwd-change", expect.anything());
     expect(appendEntry).not.toHaveBeenCalledWith("worktree-change", expect.anything());
+  });
+
+  it("(I1) 削除対象がアクティブな worktree のときは main repo へ復帰する", async () => {
+    const { deps, setEffectiveCwd } = makeDeps(false, false);
+    deps.getEffectiveCwd = () => "/repo/.worktrees/feat"; // the active worktree IS removed
+
+    await cleanupWorktree(deps, { branch: "feat" }, { cwd: "/repo" });
+
+    expect(setEffectiveCwd).toHaveBeenCalledWith("/repo");
+  });
+
+  it("(I1) 既に main repo にいる状態で別 worktree を掃除しても CWD を動かさない", async () => {
+    const { deps, setEffectiveCwd, appendEntry } = makeDeps(false, false);
+    deps.getEffectiveCwd = () => "/repo"; // already at main repo
+
+    await cleanupWorktree(deps, { branch: "feat" }, { cwd: "/repo" });
+
+    expect(setEffectiveCwd).not.toHaveBeenCalled();
+    expect(appendEntry).not.toHaveBeenCalledWith("cwd-change", expect.anything());
   });
 });
