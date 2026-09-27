@@ -47,6 +47,35 @@ export {
 };
 
 // ============================================================================
+// Pure Helpers
+// ============================================================================
+
+/**
+ * Return the directory the session should move to after removing `removedPath`,
+ * or null to keep the current effective CWD untouched.
+ *
+ * Removing one worktree must not silently teleport a session working in a
+ * *different* worktree back to the repository root (I1).
+ * When `effectiveCwd` is undefined/empty (legacy / unmocked tests), falls back
+ * to the main repo for backward compatibility.
+ */
+export function resolveEffectiveCwdForRemoval(
+  mainRepo: string,
+  removedPath: string,
+  effectiveCwd: string | undefined,
+  defaultBranch: string,
+): { cwd: string; branch: string } | null {
+  if (!effectiveCwd) {
+    return { cwd: mainRepo, branch: defaultBranch };
+  }
+  if (effectiveCwd === removedPath) {
+    return { cwd: mainRepo, branch: defaultBranch };
+  }
+  // Session is working elsewhere (another worktree or the main repo) -> leave CWD untouched
+  return null;
+}
+
+// ============================================================================
 // Tool Operations
 // ============================================================================
 
@@ -376,17 +405,26 @@ export async function cleanupWorktree(
   const branchResult = await deps.exec(["branch", "-d", target], mainRepo);
   const branchDeleted = branchResult.code === 0;
 
-  // Switch back to main repo
-  deps.setEffectiveCwd(mainRepo);
-  deps.appendEntry("cwd-change", { cwd: mainRepo });
-  deps.appendEntry("worktree-change", {
-    mainRepoPath: mainRepo,
-    currentWorktreePath: mainRepo,
-    currentBranch: defaultBranch,
+  // Switch CWD back to main repo only if the removed worktree was the active one (I1)
+  const next = resolveEffectiveCwdForRemoval(
+    mainRepo,
+    wt.path,
+    deps.getEffectiveCwd?.(),
     defaultBranch,
-  });
-  deps.updateFooterStatus(ctx, mainRepo, mainRepo);
-  deps.updateWorktreeStatus?.(ctx, defaultBranch, mainRepo, mainRepo, defaultBranch);
+  );
+
+  if (next) {
+    deps.setEffectiveCwd(next.cwd);
+    deps.appendEntry("cwd-change", { cwd: next.cwd });
+    deps.appendEntry("worktree-change", {
+      mainRepoPath: mainRepo,
+      currentWorktreePath: next.cwd,
+      currentBranch: next.branch,
+      defaultBranch,
+    });
+    deps.updateFooterStatus(ctx, next.cwd, mainRepo);
+    deps.updateWorktreeStatus?.(ctx, next.branch, next.cwd, mainRepo, defaultBranch);
+  }
 
   return {
     content: `Cleaned up worktree '${target}'.${branchDeleted ? ` Branch '${target}' deleted.` : ` Branch '${target}' was not merged and was kept.`}`,

@@ -7,6 +7,7 @@ import {
   detectMainRepoWithExec,
   detectDefaultBranchWithExec,
   hasUncommittedChangesWithExec,
+  resolveEffectiveCwdForRemoval,
   type OpsDeps,
 } from "./ops.js";
 import type { ExecResult } from "@earendil-works/pi-coding-agent";
@@ -19,6 +20,48 @@ function ok(stdout = "", stderr = ""): ExecResult {
 function fail(stderr = "error", stdout = "", code = 1): ExecResult {
   return { stdout, stderr, code, killed: false };
 }
+
+describe("resolveEffectiveCwdForRemoval (I1)", () => {
+  const main = "/repo";
+  const defaultBranch = "main";
+
+  it("returns main repo when effectiveCwd was the removed worktree", () => {
+    const next = resolveEffectiveCwdForRemoval(
+      main,
+      "/repo/.worktrees/feature-a",
+      "/repo/.worktrees/feature-a",
+      defaultBranch,
+    );
+    expect(next).toEqual({ cwd: main, branch: defaultBranch });
+  });
+
+  it("returns null when session is in a DIFFERENT worktree (preserves active context)", () => {
+    const next = resolveEffectiveCwdForRemoval(
+      main,
+      "/repo/.worktrees/feature-b",
+      "/repo/.worktrees/feature-a",
+      defaultBranch,
+    );
+    expect(next).toBeNull();
+  });
+
+  it("returns main repo fallback when effectiveCwd is undefined/empty (legacy / unmocked tests)", () => {
+    expect(resolveEffectiveCwdForRemoval(main, "/repo/.worktrees/feature-a", undefined, defaultBranch))
+      .toEqual({ cwd: main, branch: defaultBranch });
+    expect(resolveEffectiveCwdForRemoval(main, "/repo/.worktrees/feature-a", "", defaultBranch))
+      .toEqual({ cwd: main, branch: defaultBranch });
+  });
+
+  it("returns null when session is already at the main repo (cleaning a background worktree)", () => {
+    const next = resolveEffectiveCwdForRemoval(
+      main,
+      "/repo/.worktrees/feature-b",
+      main,
+      defaultBranch,
+    );
+    expect(next).toBeNull();
+  });
+});
 
 describe("detectMainRepoWithExec", () => {
   it("detects main worktree path from porcelain output", async () => {
@@ -375,6 +418,8 @@ describe("cleanupWorktree", () => {
       deps: { exec, setEffectiveCwd, appendEntry, updateFooterStatus, statSync },
       exec,
       setEffectiveCwd,
+      appendEntry,
+      updateFooterStatus,
     };
   }
 
@@ -418,5 +463,20 @@ describe("cleanupWorktree", () => {
     expect(exec).toHaveBeenCalledWith(["branch", "-d", "feat"], "/repo");
     expect(setEffectiveCwd).toHaveBeenCalledWith("/repo");
     expect(result.details.branchDeleted).toBe(true);
+  });
+
+  it("#13 (I1) 非アクティブな worktree の cleanup でアクティブな CWD が破壊されない", async () => {
+    const { deps, setEffectiveCwd, appendEntry } = makeDeps(false, false);
+    // Session is currently active in a DIFFERENT worktree
+    deps.getEffectiveCwd = () => "/repo/.worktrees/other-active";
+
+    const result = await cleanupWorktree(deps, { branch: "feat" }, { cwd: "/repo" });
+
+    // wt is cleaned up
+    expect(result.details.branch).toBe("feat");
+    // BUT effectiveCwd is NOT reset to /repo
+    expect(setEffectiveCwd).not.toHaveBeenCalled();
+    expect(appendEntry).not.toHaveBeenCalledWith("cwd-change", expect.anything());
+    expect(appendEntry).not.toHaveBeenCalledWith("worktree-change", expect.anything());
   });
 });
