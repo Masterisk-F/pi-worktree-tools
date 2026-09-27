@@ -305,6 +305,41 @@ describe("createWorktree", () => {
     expect(setEffectiveCwd).toHaveBeenCalledWith("/repo/.worktrees/damaged");
     expect(result.details.path).toBe("/repo/.worktrees/damaged");
   });
+
+  it("#5b (I2) feature/login と feature-login が同一ベース名でも衝突を回避して作成可能", async () => {
+    // Existing worktree for feature-login occupies /repo/.worktrees/feature-login
+    const existingHyphenPath = "/repo/.worktrees/feature-login";
+    const { deps, exec } = makeDeps(
+      async (args: string[]) => {
+        if (args[0] === "worktree" && args[1] === "list") {
+          return ok(
+            "worktree /repo\nHEAD 1234\nbranch refs/heads/main\n\n" +
+              `worktree ${existingHyphenPath}\nHEAD 5678\nbranch refs/heads/feature-login\n\n`,
+          );
+        }
+        if (args[0] === "rev-parse" && args.includes("--git-common-dir")) {
+          return ok(".git\n");
+        }
+        if (args[0] === "rev-parse") return fail(); // branch doesn't exist -> use -b
+        if (args[0] === "worktree" && args[1] === "add") return ok();
+        return ok();
+      },
+      // Note: /repo/.worktrees/feature-login exists on disk!
+      { [existingHyphenPath]: true },
+    );
+
+    // Now create worktree for feature/login (slash variant)
+    const result = await createWorktree(deps, { branch: "feature/login" }, { cwd: "/repo" });
+
+    // Under I2, it must NOT use /repo/.worktrees/feature-login (which is taken).
+    // Instead it uses a disambiguated hash suffix.
+    expect(result.details.path).not.toBe(existingHyphenPath);
+    expect((result.details.path as string).startsWith("/repo/.worktrees/feature-login-")).toBe(true);
+    expect(exec).toHaveBeenCalledWith(
+      expect.arrayContaining(["worktree", "add", "-b", "feature/login", result.details.path]),
+      "/repo",
+    );
+  });
 });
 
 describe("switchWorktree", () => {

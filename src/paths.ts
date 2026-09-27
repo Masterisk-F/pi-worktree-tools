@@ -6,6 +6,7 @@ export function escapeRegex(str: string): string {
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
+import { createHash } from "node:crypto";
 
 // ---------------------------------------------------------------------------
 // Base directory resolution
@@ -78,12 +79,30 @@ export function resolveWorktreeBaseDir(
 }
 
 /**
+ * Deterministic short SHA-1 hash for branch disambiguation.
+ */
+function shortHash(input: string): string {
+  return createHash("sha1").update(input).digest("hex").slice(0, 6);
+}
+
+/**
  * Convert a branch name with slashes to a flat directory name to avoid nested
  * parent directories that leave empty residues upon removal.
  * E.g., `feature/login` -> `feature-login`
+ *
+ * When an `isTaken` predicate is provided and returns true for the base flat
+ * name (e.g. `feature-login` is already occupied by a different branch),
+ * appends a deterministic short hash of the full branch name to disambiguate (I2).
  */
-export function flatBranchDirName(branch: string): string {
-  return branch.split("/").join("-");
+export function flatBranchDirName(
+  branch: string,
+  isTaken?: (dirName: string) => boolean,
+): string {
+  const base = branch.split("/").join("-");
+  if (isTaken && isTaken(base)) {
+    return `${base}-${shortHash(branch)}`;
+  }
+  return base;
 }
 
 /**

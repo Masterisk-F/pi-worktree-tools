@@ -162,10 +162,11 @@ export async function createWorktree(
   const checkStat = deps.statSync ?? statSync;
 
   // Check if worktree already exists in git worktree list
+  let existingWorktrees: WorktreeInfo[] = [];
   const listResult = await deps.exec(["worktree", "list", "--porcelain"], mainRepo);
   if (listResult.code === 0) {
-    const worktrees = parseWorktreePorcelain(listResult.stdout);
-    const existingWt = findWorktreeByBranch(worktrees, branchName);
+    existingWorktrees = parseWorktreePorcelain(listResult.stdout);
+    const existingWt = findWorktreeByBranch(existingWorktrees, branchName);
 
     if (existingWt) {
       const isDamaged =
@@ -204,7 +205,12 @@ export async function createWorktree(
   // Resolve safe base directory outside of .git
   const gitDir = await detectGitDirWithExec(deps.exec, mainRepo);
   const baseDir = resolveWorktreeBaseDir(mainRepo, gitDir);
-  const flatDirName = flatBranchDirName(branchName);
+  // Disambiguate path if another branch's worktree already occupies the base flat name (I2)
+  const flatDirName = flatBranchDirName(branchName, (name) =>
+    existingWorktrees.some(
+      (w) => !w.prunable && w.branchName !== branchName && w.path === join(baseDir, name),
+    ),
+  );
   const worktreePath = join(baseDir, flatDirName);
 
   try {
