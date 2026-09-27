@@ -541,4 +541,64 @@ describe("cleanupWorktree", () => {
     expect(setEffectiveCwd).not.toHaveBeenCalled();
     expect(appendEntry).not.toHaveBeenCalledWith("cwd-change", expect.anything());
   });
+
+  it("#14 (I1) ctx.cwd で指定したリポジトリの worktree を cleanup する（別リポジトリがアクティブでも）", async () => {
+    // Two repositories: repoA is the session-active one, repoB is the cleanup target.
+    // exec() branches on its cwd argument so that a repo mix-up is observable.
+    const exec = vi.fn().mockImplementation(async (args: string[], cwd?: string) => {
+      if (args[0] === "symbolic-ref") return ok("refs/remotes/origin/main\n");
+      if (args[0] === "worktree" && args[1] === "list") {
+        return cwd === "/repoB"
+          ? ok(
+              "worktree /repoB\nHEAD 1\nbranch refs/heads/main\n\n" +
+                "worktree /repoB/.worktrees/feat\nHEAD 2\nbranch refs/heads/feat\n\n",
+            )
+          : ok("worktree /repoA\nHEAD 3\nbranch refs/heads/main\n\n");
+      }
+      if (args[0] === "status") return ok("");
+      return ok();
+    });
+    const setEffectiveCwd = vi.fn();
+    const deps: OpsDeps = {
+      exec,
+      setEffectiveCwd,
+      appendEntry: vi.fn(),
+      updateFooterStatus: vi.fn(),
+      statSync: vi.fn(() => ({ isDirectory: () => true })),
+      getEffectiveCwd: () => "/repoA/.worktrees/active",
+    };
+
+    const result = await cleanupWorktree(deps, { branch: "feat" }, { cwd: "/repoB" });
+
+    expect(exec).toHaveBeenCalledWith(["worktree", "list", "--porcelain"], "/repoB");
+    expect(exec).toHaveBeenCalledWith(
+      ["worktree", "remove", "-f", "/repoB/.worktrees/feat"],
+      "/repoB",
+    );
+    expect(result.details.mainRepo).toBe("/repoB");
+  });
+
+  it("#15 (I2) default が main のとき master worktree の削除を拒否する", async () => {
+    const exec = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === "symbolic-ref") return ok("refs/remotes/origin/main\n");
+      if (args[0] === "worktree" && args[1] === "list") {
+        return ok(
+          "worktree /repo\nHEAD 1\nbranch refs/heads/main\n\n" +
+            "worktree /repo/.worktrees/master\nHEAD 2\nbranch refs/heads/master\n\n",
+        );
+      }
+      return ok();
+    });
+    const deps: OpsDeps = {
+      exec,
+      setEffectiveCwd: vi.fn(),
+      appendEntry: vi.fn(),
+      updateFooterStatus: vi.fn(),
+    };
+
+    await expect(cleanupWorktree(deps, { branch: "master" }, { cwd: "/repo" })).rejects.toThrow(
+      "Cannot remove the default branch",
+    );
+    expect(exec).not.toHaveBeenCalledWith(expect.arrayContaining(["remove"]), expect.anything());
+  });
 });

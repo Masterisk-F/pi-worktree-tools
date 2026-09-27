@@ -323,14 +323,18 @@ export async function cleanupWorktree(
     throw new Error(`Invalid branch name: ${validationError}`);
   }
 
-  const activeCwd = deps.getEffectiveCwd?.() || ctx.cwd;
+  // An explicit ctx.cwd (e.g. session_shutdown passing { cwd: item.repo })
+  // identifies the repository to clean up. getEffectiveCwd() is a session-wide
+  // singleton and may point at a *different* repository, so it is only a fallback (I1).
+  const activeCwd = ctx.cwd || deps.getEffectiveCwd?.();
   const mainRepo = await detectMainRepoWithExec(deps.exec, activeCwd);
   if (!mainRepo) {
     throw new Error("Not inside a git repository");
   }
 
   const defaultBranch = await detectDefaultBranchWithExec(deps.exec, mainRepo);
-  if (target === defaultBranch) {
+  // Mirror the alias predicate used by createWorktree/switchWorktree (I2).
+  if (target === defaultBranch || target === "main" || target === "master") {
     throw new Error(`Cannot remove the default branch (${defaultBranch}) worktree`);
   }
 
