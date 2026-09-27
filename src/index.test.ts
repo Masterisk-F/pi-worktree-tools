@@ -193,4 +193,106 @@ describe("index.ts (Extension Harness)", () => {
       }
     });
   });
+
+  describe("tool registration & dispatch (G1)", () => {
+    it("registers the 4 worktree tools with expected names and schemas", () => {
+      expect(pi.registeredTools.has("worktree_list")).toBe(true);
+      expect(pi.registeredTools.has("worktree_create")).toBe(true);
+      expect(pi.registeredTools.has("worktree_switch")).toBe(true);
+      expect(pi.registeredTools.has("worktree_cleanup")).toBe(true);
+
+      const createTool = pi.registeredTools.get("worktree_create");
+      expect(createTool.parameters.properties.branch).toBeDefined();
+
+      const switchTool = pi.registeredTools.get("worktree_switch");
+      expect(switchTool.parameters.properties.branch).toBeDefined();
+
+      const cleanupTool = pi.registeredTools.get("worktree_cleanup");
+      expect(cleanupTool.parameters.properties.branch).toBeDefined();
+    });
+
+    it("dispatches worktree_list tool execution to listWorktrees", async () => {
+      const listTool = pi.registeredTools.get("worktree_list");
+      expect(listTool).toBeDefined();
+
+      // Mock git worktree list porcelain response
+      pi.exec.mockImplementation(async (bin: string, args: string[]) => {
+        if (args[0] === "worktree" && args[1] === "list") {
+          return {
+            stdout: "worktree /orig/repo\nHEAD 1234\nbranch refs/heads/main\n\n",
+            code: 0,
+          };
+        }
+        if (args[0] === "symbolic-ref") {
+          return { stdout: "refs/remotes/origin/main\n", code: 0 };
+        }
+        return { stdout: "", code: 0 };
+      });
+
+      const res = await listTool.execute("call-1", {}, null, null, { cwd: "/orig/repo" });
+      expect(res.content[0].text).toContain("Found 1 worktree(s):");
+      expect(res.details.mainRepo).toBe("/orig/repo");
+    });
+  });
+
+  describe("session_shutdown candidates collection (G2)", () => {
+    it("ignores shutdown when reason is not quit", async () => {
+      const shutdownHandler = pi.eventHandlers.get("session_shutdown")?.[0];
+      const mockCtx = {
+        cwd: "/orig/repo",
+        sessionManager: { getBranch: vi.fn() },
+      };
+
+      await shutdownHandler?.({ reason: "reload" }, mockCtx);
+      expect(mockCtx.sessionManager.getBranch).not.toHaveBeenCalled();
+    });
+
+    it("collects touched branches/paths from session entries across create, switch, and custom types", async () => {
+      const shutdownHandler = pi.eventHandlers.get("session_shutdown")?.[0];
+      const branchEntries = [
+        {
+          type: "message",
+          message: {
+            role: "toolResult",
+            toolName: "worktree_create",
+            details: { branch: "feat-a", path: "/orig/repo/.worktrees/feat-a" },
+          },
+        },
+        {
+          type: "custom",
+          customType: "cwd-change",
+          data: { cwd: "/orig/repo/.worktrees/feat-b" },
+        },
+        {
+          type: "custom",
+          customType: "worktree-change",
+          data: {
+            currentBranch: "feat-c",
+            currentWorktreePath: "/orig/repo/.worktrees/feat-c",
+            mainRepoPath: "/orig/repo",
+          },
+        },
+      ];
+
+      const mockCtx = {
+        cwd: "/orig/repo",
+        sessionManager: { getBranch: () => branchEntries },
+      };
+
+      let listCalled = false;
+      pi.exec.mockImplementation(async (bin: string, args: string[]) => {
+        if (args[0] === "worktree" && args[1] === "list") {
+          listCalled = true;
+          return {
+            stdout: "worktree /orig/repo\nHEAD 1234\nbranch refs/heads/main\n\n",
+            code: 0,
+          };
+        }
+        return { stdout: "", code: 0 };
+      });
+
+      await shutdownHandler?.({ reason: "quit" }, mockCtx);
+      expect(listCalled).toBe(true);
+    });
+  });
 });
