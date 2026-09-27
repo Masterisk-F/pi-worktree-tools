@@ -24,37 +24,6 @@ export interface WorktreeInfo {
 // ---------------------------------------------------------------------------
 
 /**
- * Extract paths of worktrees marked as `prunable` in porcelain output.
- * Git emits `prunable <reason>` or plain `prunable` on its own line within
- * the worktree stanza when the worktree's administrative metadata is stale
- * or points to a non-existent checkout.
- */
-export function getPrunablePaths(porcelain: string): Set<string> {
-  const prunablePaths = new Set<string>();
-  const blocks = porcelain.trim().split(/\n\n+/);
-
-  for (const block of blocks) {
-    const lines = block.trim().split("\n");
-    let worktreePath = "";
-    let isPrunable = false;
-
-    for (const line of lines) {
-      if (line.startsWith("worktree ")) {
-        worktreePath = line.slice("worktree ".length).trim();
-      } else if (line === "prunable" || line.startsWith("prunable ")) {
-        isPrunable = true;
-      }
-    }
-
-    if (worktreePath && isPrunable) {
-      prunablePaths.add(worktreePath);
-    }
-  }
-
-  return prunablePaths;
-}
-
-/**
  * Pure parser for `git worktree list --porcelain`.
  */
 export function parseWorktreePorcelain(output: string): WorktreeInfo[] {

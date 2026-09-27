@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   parseWorktreePorcelain,
-  getPrunablePaths,
   findWorktreeByBranch,
   getMainWorktree,
   detectGitDirWithExec,
@@ -58,22 +57,6 @@ describe("parseWorktreePorcelain", () => {
   });
 });
 
-describe("getPrunablePaths", () => {
-  it("extracts paths marked with prunable", () => {
-    const output =
-      "worktree /repo\nHEAD 1234\nbranch refs/heads/main\n\n" +
-      "worktree /repo/.worktrees/good\nHEAD 5678\nbranch refs/heads/good\n\n" +
-      "worktree /repo/.git/worktrees/bad1\nHEAD 9abc\nbranch refs/heads/bad1\nprunable\n\n" +
-      "worktree /repo/.git/worktrees/bad2\nHEAD def0\nbranch refs/heads/bad2\nprunable gitdir missing\n\n";
-
-    const prunables = getPrunablePaths(output);
-    expect(prunables.has("/repo")).toBe(false);
-    expect(prunables.has("/repo/.worktrees/good")).toBe(false);
-    expect(prunables.has("/repo/.git/worktrees/bad1")).toBe(true);
-    expect(prunables.has("/repo/.git/worktrees/bad2")).toBe(true);
-    expect(prunables.size).toBe(2);
-  });
-});
 
 describe("findWorktreeByBranch", () => {
   it("finds matching entry by branchName", () => {

@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { validateBranchName } from "./validation.js";
 import {
   parseWorktreePorcelain,
-  getPrunablePaths,
   findWorktreeByBranch,
   getMainWorktree,
   detectMainRepoWithExec,
@@ -138,12 +137,10 @@ export async function createWorktree(
   if (listResult.code === 0) {
     const worktrees = parseWorktreePorcelain(listResult.stdout);
     const existingWt = findWorktreeByBranch(worktrees, branchName);
-    const prunablePaths = getPrunablePaths(listResult.stdout);
 
     if (existingWt) {
       const isDamaged =
         existingWt.prunable ||
-        prunablePaths.has(existingWt.path) ||
         isWorktreeMissing(existingWt.path, checkStat);
 
       if (!isDamaged) {
@@ -274,14 +271,12 @@ export async function switchWorktree(
     throw new Error(`Failed to list worktrees: ${listResult.stderr.trim()}`);
   }
   const worktrees = parseWorktreePorcelain(listResult.stdout);
-  const prunablePaths = getPrunablePaths(listResult.stdout);
   const wt = findWorktreeByBranch(worktrees, target);
   const checkStat = deps.statSync ?? statSync;
 
   const isDamaged =
     !wt ||
     wt.prunable ||
-    prunablePaths.has(wt.path) ||
     isWorktreeMissing(wt.path, checkStat);
 
   if (isDamaged) {
