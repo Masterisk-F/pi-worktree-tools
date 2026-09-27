@@ -95,15 +95,15 @@ export default function (pi: ExtensionAPI): void {
       const input = event.input as { command: string };
       input.command = `cd ${bashSingleQuote(getEffectiveCwd())} && ${input.command}`;
     } else if (FILE_TOOLS_REQUIRED_PATH.has(event.toolName)) {
-      const input = event.input as { path: string };
-      if (!isAbsolute(input.path)) {
+      const input = event.input as { path?: unknown };
+      if (typeof input.path === "string" && !isAbsolute(input.path)) {
         input.path = resolve(getEffectiveCwd(), input.path);
       }
     } else if (FILE_TOOLS_OPTIONAL_PATH.has(event.toolName)) {
-      const input = event.input as { path?: string };
+      const input = event.input as { path?: unknown };
       if (input.path === undefined || input.path === "") {
         input.path = getEffectiveCwd();
-      } else if (!isAbsolute(input.path)) {
+      } else if (typeof input.path === "string" && !isAbsolute(input.path)) {
         input.path = resolve(getEffectiveCwd(), input.path);
       }
     }
