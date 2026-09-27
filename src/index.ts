@@ -320,6 +320,9 @@ export default function (pi: ExtensionAPI): void {
 
     if (toCleanup.length === 0) return;
 
+    // Non-interactive environments (CI, background, pipes): do not hang on readline (Q2)
+    if (!process.stdin.isTTY) return;
+
     // 5. Confirm deletion with user (readline-based: works after TUI shutdown)
     const names = toCleanup.map((item) => item.wt.branchName).join(", ");
     const rl = createInterface({ input: process.stdin, output: process.stdout });
