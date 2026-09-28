@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { validateBranchName } from "./validation.js";
 import {
   parseWorktreePorcelain,
-  findWorktreeByBranch,
   detectMainRepoWithExec,
   detectDefaultBranchWithExec,
   detectGitDirWithExec,
@@ -148,7 +147,7 @@ export async function createWorktree(
   const listResult = await deps.exec(["worktree", "list", "--porcelain"], mainRepo);
   if (listResult.code === 0) {
     const existingWorktrees = parseWorktreePorcelain(listResult.stdout);
-    const existingWt = findWorktreeByBranch(existingWorktrees, branchName);
+    const existingWt = existingWorktrees.find((wt) => wt.branchName === branchName);
 
     if (existingWt) {
       const isDamaged =
@@ -272,7 +271,7 @@ export async function switchWorktree(
     throw new Error(`Failed to list worktrees: ${listResult.stderr.trim()}`);
   }
   const worktrees = parseWorktreePorcelain(listResult.stdout);
-  const wt = findWorktreeByBranch(worktrees, target);
+  const wt = worktrees.find((w) => w.branchName === target);
   const checkStat = deps.statSync ?? statSync;
 
   const isDamaged =
@@ -342,7 +341,7 @@ export async function cleanupWorktree(
     throw new Error(`Failed to list worktrees: ${listResult.stderr.trim()}`);
   }
   const worktrees = parseWorktreePorcelain(listResult.stdout);
-  const wt = findWorktreeByBranch(worktrees, target);
+  const wt = worktrees.find((w) => w.branchName === target);
   if (!wt) {
     throw new Error(`No worktree found for branch '${target}'`);
   }

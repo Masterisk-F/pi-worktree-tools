@@ -1,8 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   parseWorktreePorcelain,
-  findWorktreeByBranch,
-  getMainWorktree,
   detectGitDirWithExec,
 } from "./git.js";
 import type { ExecResult } from "@earendil-works/pi-coding-agent";
@@ -22,13 +20,11 @@ describe("parseWorktreePorcelain", () => {
     expect(result[0]).toEqual({
       path: "/path/to/repo",
       head: "1234567",
-      branch: "refs/heads/main",
       branchName: "main",
     });
     expect(result[1]).toEqual({
       path: "/path/to/repo/.worktrees/feat",
       head: "89abcdef",
-      branch: "refs/heads/feat",
       branchName: "feat",
     });
   });
@@ -54,28 +50,6 @@ describe("parseWorktreePorcelain", () => {
   it("returns empty array for empty output", () => {
     expect(parseWorktreePorcelain("")).toEqual([]);
     expect(parseWorktreePorcelain("   \n\n  ")).toEqual([]);
-  });
-});
-
-
-describe("findWorktreeByBranch", () => {
-  it("finds matching entry by branchName", () => {
-    const worktrees = [
-      { path: "/repo", head: "1", branch: "refs/heads/main", branchName: "main" },
-      { path: "/repo/feat", head: "2", branch: "refs/heads/feature/login", branchName: "feature/login" },
-    ];
-    expect(findWorktreeByBranch(worktrees, "feature/login")?.path).toBe("/repo/feat");
-    expect(findWorktreeByBranch(worktrees, "nonexistent")).toBeUndefined();
-  });
-});
-
-describe("getMainWorktree", () => {
-  it("returns the first worktree in the list", () => {
-    const worktrees = [
-      { path: "/main", head: "1", branch: "refs/heads/main", branchName: "main" },
-      { path: "/secondary", head: "2", branch: "refs/heads/feat", branchName: "feat" },
-    ];
-    expect(getMainWorktree(worktrees)?.path).toBe("/main");
   });
 });
 

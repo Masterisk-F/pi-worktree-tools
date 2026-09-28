@@ -11,8 +11,6 @@ export interface WorktreeInfo {
   path: string;
   /** Current HEAD commit hash */
   head: string;
-  /** Branch ref (e.g. "refs/heads/feature") or "detached" */
-  branch: string;
   /** Human-readable branch name extracted from refs/heads/<name>, or "detached" */
   branchName: string;
   /** Whether git considers this worktree prunable (e.g. checkout missing or damaged) */
@@ -62,7 +60,6 @@ export function parseWorktreePorcelain(output: string): WorktreeInfo[] {
     let branchName: string;
     if (isDetached || !branch) {
       branchName = "detached";
-      branch = branch || "detached";
     } else if (branch.startsWith("refs/heads/")) {
       branchName = branch.slice("refs/heads/".length);
     } else {
@@ -72,24 +69,12 @@ export function parseWorktreePorcelain(output: string): WorktreeInfo[] {
     result.push({
       path: worktreePath,
       head,
-      branch,
       branchName,
       ...(isPrunable ? { prunable: true } : {}),
     });
   }
 
   return result;
-}
-
-export function findWorktreeByBranch(
-  worktrees: WorktreeInfo[],
-  branchName: string,
-): WorktreeInfo | undefined {
-  return worktrees.find((wt) => wt.branchName === branchName);
-}
-
-export function getMainWorktree(worktrees: WorktreeInfo[]): WorktreeInfo | undefined {
-  return worktrees[0];
 }
 
 // ---------------------------------------------------------------------------
@@ -103,8 +88,7 @@ export async function detectMainRepoWithExec(
   const result = await exec(["worktree", "list", "--porcelain"], cwd);
   if (result.code !== 0) return null;
   const worktrees = parseWorktreePorcelain(result.stdout);
-  const main = getMainWorktree(worktrees);
-  return main?.path ?? null;
+  return worktrees[0]?.path ?? null;
 }
 
 export async function detectDefaultBranchWithExec(
@@ -119,7 +103,7 @@ export async function detectDefaultBranchWithExec(
   const result = await exec(["worktree", "list", "--porcelain"], cwd);
   if (result.code === 0) {
     const worktrees = parseWorktreePorcelain(result.stdout);
-    const mainWt = getMainWorktree(worktrees);
+    const mainWt = worktrees[0];
     if (mainWt && mainWt.branchName !== "detached") {
       return mainWt.branchName;
     }
