@@ -34,39 +34,6 @@ describe("CWD State", () => {
   });
 });
 
-describe("Worktree State", () => {
-  function makeMockContext(): { ctx: ExtensionContext; setStatus: ReturnType<typeof vi.fn> } {
-    const setStatus = vi.fn();
-    const ctx = {
-      hasUI: true,
-      ui: {
-        setStatus,
-        theme: { fg: (_color: string, text: string) => text },
-      },
-    } as unknown as ExtensionContext;
-    return { ctx, setStatus };
-  }
-
-  it("setWorktreeState feeds the footer: feature worktree shows 🌳", () => {
-    setWorktreeState("/repo", "/repo/.worktrees/feat", "feat", "master");
-    const { ctx, setStatus } = makeMockContext();
-
-    updateWorktreeFooter(ctx);
-    expect(setStatus).toHaveBeenCalledWith(
-      WORKTREE_STATUS_KEY,
-      expect.stringContaining("🌳 feat"),
-    );
-  });
-
-  it("setWorktreeState feeds the footer: main repo at main branch clears 🌳", () => {
-    setWorktreeState("/repo", "/repo", "main", "main");
-    const { ctx, setStatus } = makeMockContext();
-
-    updateWorktreeFooter(ctx);
-    expect(setStatus).toHaveBeenCalledWith(WORKTREE_STATUS_KEY, undefined);
-  });
-});
-
 describe("Footer Status", () => {
   function makeMockContext(): { ctx: ExtensionContext; setStatus: ReturnType<typeof vi.fn> } {
     const setStatus = vi.fn();

@@ -93,7 +93,7 @@ export default function (pi: ExtensionAPI): void {
     exec: (args, cwd) => pi.exec("git", args, { cwd: cwd || getCwd() }),
     setEffectiveCwd: (cwd) => setEffectiveCwd(cwd),
     appendEntry: (type, data) => pi.appendEntry(type, data),
-    updateFooterStatus: (ctx, _cwd, _original) => updateCwdFooter(ctx as any),
+    updateFooterStatus: (ctx) => updateCwdFooter(ctx as any),
     updateWorktreeStatus,
     getEffectiveCwd,
   };

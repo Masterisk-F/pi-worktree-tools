@@ -16,29 +16,18 @@ import {
 } from "./state.js";
 
 type EventHandler = (event: any, ctx: any) => Promise<any> | any;
+type MockExtensionAPI = ReturnType<typeof makeMockPi>;
 
-interface MockExtensionAPI {
-  registeredTools: Map<string, any>;
-  eventHandlers: Map<string, EventHandler[]>;
-  exec: ReturnType<typeof vi.fn>;
-  appendEntry: ReturnType<typeof vi.fn>;
-  registerTool: (tool: any) => void;
-  on: (event: string, handler: EventHandler) => void;
-}
-
-function makeMockPi(): MockExtensionAPI {
+function makeMockPi() {
   const registeredTools = new Map<string, any>();
   const eventHandlers = new Map<string, EventHandler[]>();
-
   return {
     registeredTools,
     eventHandlers,
     exec: vi.fn(),
     appendEntry: vi.fn(),
-    registerTool(tool: any) {
-      registeredTools.set(tool.name, tool);
-    },
-    on(event: string, handler: EventHandler) {
+    registerTool: (tool: any) => registeredTools.set(tool.name, tool),
+    on: (event: string, handler: EventHandler) => {
       const list = eventHandlers.get(event) ?? [];
       list.push(handler);
       eventHandlers.set(event, list);
@@ -73,50 +62,27 @@ describe("index.ts (Extension Harness)", () => {
       expect(event.input.command).toContain("cd '/orig/repo/.worktrees/feat' && ls");
     });
 
-    it("(Q3) does not throw TypeError when input.path is undefined, non-string, or null", () => {
+    it("(Q3/guards) handles non-string, missing, or invalid input safely across all tools", () => {
       const handler = pi.eventHandlers.get("tool_call")?.[0];
       setEffectiveCwd("/orig/repo/.worktrees/feat");
 
-      // Required path tools (read, write, edit) with missing or invalid path
-      for (const toolName of ["read", "write", "edit"]) {
-        const evUndefined = { toolName, input: { path: undefined } };
-        expect(() => handler?.(evUndefined, {})).not.toThrow();
-
-        const evNumber = { toolName, input: { path: 12345 } };
-        expect(() => handler?.(evNumber, {})).not.toThrow();
-
-        const evNull = { toolName, input: { path: null } };
-        expect(() => handler?.(evNull, {})).not.toThrow();
-      }
-
-      // Optional path tools (grep, find, ls) with invalid non-string path
-      for (const toolName of ["grep", "find", "ls"]) {
-        const evNumber = { toolName, input: { path: 12345 } };
-        expect(() => handler?.(evNumber, {})).not.toThrow();
-
-        const evNull = { toolName, input: { path: null } };
-        expect(() => handler?.(evNull, {})).not.toThrow();
-      }
-    });
-
-    it("(guard) survives a tool call with no input object at all", () => {
-      const handler = pi.eventHandlers.get("tool_call")?.[0];
-      setEffectiveCwd("/orig/repo/.worktrees/feat");
-
+      // Non-object inputs survive across all tools
       for (const input of [undefined, null, "string", 42]) {
         for (const toolName of ["bash", "read", "write", "edit", "grep", "find", "ls"]) {
           expect(() => handler?.({ toolName, input }, {})).not.toThrow();
         }
       }
-    });
 
-    it("(guard) does not corrupt a bash call whose command is not a string", () => {
-      const handler = pi.eventHandlers.get("tool_call")?.[0];
-      setEffectiveCwd("/orig/repo/.worktrees/feat");
+      // Invalid or missing path values survive across file tools
+      for (const toolName of ["read", "write", "edit", "grep", "find", "ls"]) {
+        for (const path of [undefined, null, 12345]) {
+          expect(() => handler?.({ toolName, input: { path } }, {})).not.toThrow();
+        }
+      }
 
+      // bash with non-string command is not corrupted
       const ev: { toolName: string; input: unknown } = { toolName: "bash", input: {} };
       handler?.(ev, {});
-      // Must NOT become "cd '/orig/...' && undefined"
       expect((ev.input as { command?: unknown }).command).toBeUndefined();
     });
   });

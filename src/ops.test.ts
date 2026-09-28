@@ -22,6 +22,41 @@ function fail(stderr = "error", stdout = "", code = 1): ExecResult {
   return { stdout, stderr, code, killed: false };
 }
 
+function makeStatMap(statMap: Record<string, boolean>) {
+  return (p: string) => {
+    if (statMap[p]) return { isDirectory: () => true };
+    const err = new Error("ENOENT");
+    (err as unknown as { code: string }).code = "ENOENT";
+    throw err;
+  };
+}
+
+function createMockDeps(
+  execImpl: (args: string[], cwd?: string) => Promise<ExecResult>,
+  statFn?: (p: string) => { isDirectory: () => boolean },
+) {
+  const exec = vi.fn().mockImplementation(execImpl);
+  const setEffectiveCwd = vi.fn();
+  const appendEntry = vi.fn();
+  const updateFooterStatus = vi.fn();
+  const statSync = vi.fn().mockImplementation(
+    statFn ??
+      ((_p: string) => {
+        const err = new Error("ENOENT");
+        (err as unknown as { code: string }).code = "ENOENT";
+        throw err;
+      }),
+  );
+  return {
+    deps: { exec, setEffectiveCwd, appendEntry, updateFooterStatus, statSync },
+    exec,
+    setEffectiveCwd,
+    appendEntry,
+    updateFooterStatus,
+    statSync,
+  };
+}
+
 describe("detectMainRepoWithExec", () => {
   it("detects main worktree path from porcelain output", async () => {
     const exec = vi.fn().mockResolvedValue(
@@ -126,15 +161,8 @@ describe("createWorktree", () => {
   function makeDeps(
     customExec?: (args: string[], cwd?: string) => Promise<ExecResult>,
     statMap: Record<string, boolean> = {},
-  ): {
-    deps: OpsDeps;
-    exec: ReturnType<typeof vi.fn>;
-    setEffectiveCwd: ReturnType<typeof vi.fn>;
-    appendEntry: ReturnType<typeof vi.fn>;
-    updateFooterStatus: ReturnType<typeof vi.fn>;
-    statSync: ReturnType<typeof vi.fn>;
-  } {
-    const exec = vi.fn().mockImplementation(
+  ) {
+    return createMockDeps(
       customExec ??
         (async (args: string[]) => {
           if (args[0] === "worktree" && args[1] === "list") {
@@ -151,27 +179,8 @@ describe("createWorktree", () => {
           }
           return ok();
         }),
+      makeStatMap(statMap),
     );
-    const setEffectiveCwd = vi.fn();
-    const appendEntry = vi.fn();
-    const updateFooterStatus = vi.fn();
-    const statSync = vi.fn().mockImplementation((p: string) => {
-      if (statMap[p]) {
-        return { isDirectory: () => true };
-      }
-      const err = new Error("ENOENT");
-      (err as unknown as { code: string }).code = "ENOENT";
-      throw err;
-    });
-
-    return {
-      deps: { exec, setEffectiveCwd, appendEntry, updateFooterStatus, statSync },
-      exec,
-      setEffectiveCwd,
-      appendEntry,
-      updateFooterStatus,
-      statSync,
-    };
   }
 
   it("#1 正常系: branch 指定で worktree 作成（.worktrees/ 配下にフラット名で作成）", async () => {
@@ -188,11 +197,7 @@ describe("createWorktree", () => {
     expect(appendEntry).toHaveBeenCalledWith("cwd-change", {
       cwd: "/repo/.worktrees/feature-foo",
     });
-    expect(updateFooterStatus).toHaveBeenCalledWith(
-      { cwd: "/repo" },
-      "/repo/.worktrees/feature-foo",
-      "/repo",
-    );
+    expect(updateFooterStatus).toHaveBeenCalledWith({ cwd: "/repo" });
     expect(result.details.branch).toBe("feature/foo");
     expect(result.details.path).toBe("/repo/.worktrees/feature-foo");
   });
@@ -329,47 +334,25 @@ describe("createWorktree", () => {
 });
 
 describe("switchWorktree", () => {
-  function makeDeps(statMap: Record<string, boolean> = {}): {
-    deps: OpsDeps;
-    exec: ReturnType<typeof vi.fn>;
-    setEffectiveCwd: ReturnType<typeof vi.fn>;
-    appendEntry: ReturnType<typeof vi.fn>;
-    updateFooterStatus: ReturnType<typeof vi.fn>;
-  } {
-    const exec = vi.fn().mockImplementation(async (args: string[]) => {
-      if (args[0] === "symbolic-ref") return ok("refs/remotes/origin/main\n");
-      if (args[0] === "worktree" && args[1] === "list") {
-        return ok(
-          "worktree /repo\nHEAD 1234\nbranch refs/heads/main\n\n" +
-            "worktree /repo/.worktrees/feat\nHEAD 5678\nbranch refs/heads/feat\n\n",
-        );
-      }
-      if (args[0] === "rev-parse" && args.includes("--git-common-dir")) {
-        return ok(".git\n");
-      }
-      if (args[0] === "rev-parse") return fail("not found");
-      if (args[0] === "worktree" && args[1] === "add") return ok();
-      return ok();
-    });
-    const setEffectiveCwd = vi.fn();
-    const appendEntry = vi.fn();
-    const updateFooterStatus = vi.fn();
-    const statSync = vi.fn().mockImplementation((p: string) => {
-      if (statMap[p]) {
-        return { isDirectory: () => true };
-      }
-      const err = new Error("ENOENT");
-      (err as unknown as { code: string }).code = "ENOENT";
-      throw err;
-    });
-
-    return {
-      deps: { exec, setEffectiveCwd, appendEntry, updateFooterStatus, statSync },
-      exec,
-      setEffectiveCwd,
-      appendEntry,
-      updateFooterStatus,
-    };
+  function makeDeps(statMap: Record<string, boolean> = {}) {
+    return createMockDeps(
+      async (args: string[]) => {
+        if (args[0] === "symbolic-ref") return ok("refs/remotes/origin/main\n");
+        if (args[0] === "worktree" && args[1] === "list") {
+          return ok(
+            "worktree /repo\nHEAD 1234\nbranch refs/heads/main\n\n" +
+              "worktree /repo/.worktrees/feat\nHEAD 5678\nbranch refs/heads/feat\n\n",
+          );
+        }
+        if (args[0] === "rev-parse" && args.includes("--git-common-dir")) {
+          return ok(".git\n");
+        }
+        if (args[0] === "rev-parse") return fail("not found");
+        if (args[0] === "worktree" && args[1] === "add") return ok();
+        return ok();
+      },
+      makeStatMap(statMap),
+    );
   }
 
   it("#6 default branch (main) へ復帰", async () => {
@@ -422,48 +405,33 @@ describe("switchWorktree", () => {
 });
 
 describe("cleanupWorktree", () => {
-  function makeDeps(isDirty = false, missing = false): {
-    deps: OpsDeps;
-    exec: ReturnType<typeof vi.fn>;
-    setEffectiveCwd: ReturnType<typeof vi.fn>;
-    appendEntry: ReturnType<typeof vi.fn>;
-    updateFooterStatus: ReturnType<typeof vi.fn>;
-  } {
+  function makeDeps(isDirty = false, missing = false) {
     const wtPath = "/repo/.worktrees/feat";
-    const exec = vi.fn().mockImplementation(async (args: string[]) => {
-      if (args[0] === "symbolic-ref") return ok("refs/remotes/origin/main\n");
-      if (args[0] === "worktree" && args[1] === "list") {
-        return ok(
-          "worktree /repo\nHEAD 1234\nbranch refs/heads/main\n\n" +
-            `worktree ${wtPath}\nHEAD 5678\nbranch refs/heads/feat\n\n`,
-        );
-      }
-      if (args[0] === "status") {
-        return isDirty ? ok(" M dirty.txt\n") : ok("");
-      }
-      if (args[0] === "worktree" && args[1] === "remove") return ok();
-      if (args[0] === "branch" && args[1] === "-d") return ok();
-      return ok();
-    });
-    const setEffectiveCwd = vi.fn();
-    const appendEntry = vi.fn();
-    const updateFooterStatus = vi.fn();
-    const statSync = vi.fn().mockImplementation((p: string) => {
-      if (!missing && p === wtPath) {
-        return { isDirectory: () => true };
-      }
-      const err = new Error("ENOENT");
-      (err as unknown as { code: string }).code = "ENOENT";
-      throw err;
-    });
-
-    return {
-      deps: { exec, setEffectiveCwd, appendEntry, updateFooterStatus, statSync },
-      exec,
-      setEffectiveCwd,
-      appendEntry,
-      updateFooterStatus,
-    };
+    return createMockDeps(
+      async (args: string[]) => {
+        if (args[0] === "symbolic-ref") return ok("refs/remotes/origin/main\n");
+        if (args[0] === "worktree" && args[1] === "list") {
+          return ok(
+            "worktree /repo\nHEAD 1234\nbranch refs/heads/main\n\n" +
+              `worktree ${wtPath}\nHEAD 5678\nbranch refs/heads/feat\n\n`,
+          );
+        }
+        if (args[0] === "status") {
+          return isDirty ? ok(" M dirty.txt\n") : ok("");
+        }
+        if (args[0] === "worktree" && args[1] === "remove") return ok();
+        if (args[0] === "branch" && args[1] === "-d") return ok();
+        return ok();
+      },
+      (p: string) => {
+        if (!missing && p === wtPath) {
+          return { isDirectory: () => true };
+        }
+        const err = new Error("ENOENT");
+        (err as unknown as { code: string }).code = "ENOENT";
+        throw err;
+      },
+    );
   }
 
   it("#9 未コミット変更ありでエラー（remove を呼ばない）", async () => {

@@ -19,7 +19,7 @@ export interface OpsDeps {
   exec: (args: string[], cwd?: string) => Promise<ExecResult>;
   setEffectiveCwd: (cwd: string) => void;
   appendEntry: (type: string, data: unknown) => void;
-  updateFooterStatus: (ctx: unknown, cwd: string, original: string) => void;
+  updateFooterStatus: (ctx: unknown) => void;
   updateWorktreeStatus?: (
     ctx: unknown,
     branch: string,
@@ -57,7 +57,7 @@ function commitWorktreeChange(
     currentBranch: args.branch,
     defaultBranch: args.defaultBranch,
   });
-  deps.updateFooterStatus(ctx, args.cwd, args.mainRepo);
+  deps.updateFooterStatus(ctx);
   deps.updateWorktreeStatus?.(ctx, args.branch, args.cwd, args.mainRepo, args.defaultBranch);
 }
 
