@@ -113,7 +113,7 @@ export function updateWorktreeFooter(ctx: ExtensionContext): void {
   if (!ctx.hasUI) return;
 
   const isMain =
-    (currentBranch === defaultBranch || currentBranch === "main" || currentBranch === "master") &&
+    currentBranch === defaultBranch &&
     (currentWorktreePath === mainRepoPath || !currentWorktreePath);
 
   if (isMain) {
@@ -168,14 +168,15 @@ export function restoreFromBranch(ctx: ExtensionContext): void {
   // 2. Restore worktree state from last valid `worktree-change` entry
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
-    if (
-      entry &&
-      entry.type === "custom" &&
-      entry.customType === WORKTREE_CHANGE_TYPE &&
-      entry.data &&
-      isValidWorktreeData(entry.data)
-    ) {
-      const data = entry.data;
+    if (entry && entry.type === "custom" && entry.customType === WORKTREE_CHANGE_TYPE) {
+      const data = entry.data as Partial<WorktreeChangeData> | undefined;
+      if (
+        typeof data?.mainRepoPath !== "string" ||
+        typeof data.currentWorktreePath !== "string" ||
+        typeof data.currentBranch !== "string"
+      ) {
+        continue;
+      }
 
       try {
         const stat = statSync(data.mainRepoPath);
@@ -200,14 +201,4 @@ export function restoreFromBranch(ctx: ExtensionContext): void {
       break;
     }
   }
-}
-
-function isValidWorktreeData(data: unknown): data is WorktreeChangeData {
-  if (!data || typeof data !== "object") return false;
-  const d = data as Record<string, unknown>;
-  return (
-    typeof d.mainRepoPath === "string" &&
-    typeof d.currentWorktreePath === "string" &&
-    typeof d.currentBranch === "string"
-  );
 }
