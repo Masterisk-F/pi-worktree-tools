@@ -468,15 +468,38 @@ describe("cleanupWorktree", () => {
 
   it("#9 未コミット変更ありでエラー（remove を呼ばない）", async () => {
     const { deps, exec } = makeDeps(true, false); // dirty
-    await expect(cleanupWorktree(deps, { branch: "feat" }, { cwd: "/repo" })).rejects.toThrow(
-      "has uncommitted changes",
-    );
+    await expect(
+      cleanupWorktree(deps, { branch: "feat", repo: "/repo" }, { cwd: "/repo" }),
+    ).rejects.toThrow("has uncommitted changes");
     expect(exec).not.toHaveBeenCalledWith(expect.arrayContaining(["remove"]), expect.anything());
+  });
+
+  it("repo が空文字または空白のみの場合はエラー", async () => {
+    const { deps } = makeDeps(false, false);
+    await expect(
+      cleanupWorktree(deps, { branch: "feat", repo: "" }, { cwd: "/repo" }),
+    ).rejects.toThrow("Repository path cannot be empty");
+    await expect(
+      cleanupWorktree(deps, { branch: "feat", repo: "   " }, { cwd: "/repo" }),
+    ).rejects.toThrow("Repository path cannot be empty");
+  });
+
+  it("git リポジトリ外のパスが渡された場合はエラー", async () => {
+    const exec = vi.fn().mockResolvedValue(fail("not a git repo"));
+    const deps: OpsDeps = {
+      exec,
+      setEffectiveCwd: vi.fn(),
+      appendEntry: vi.fn(),
+      updateFooterStatus: vi.fn(),
+    };
+    await expect(
+      cleanupWorktree(deps, { branch: "feat", repo: "/not/a/repo" }, { cwd: "/repo" }),
+    ).rejects.toThrow("Not inside a git repository: /not/a/repo");
   });
 
   it("#10 正常削除: remove, prune, branch -d 実行 & CWD 復帰", async () => {
     const { deps, exec, setEffectiveCwd } = makeDeps(false, false);
-    const result = await cleanupWorktree(deps, { branch: "feat" }, { cwd: "/repo" });
+    const result = await cleanupWorktree(deps, { branch: "feat", repo: "/repo" }, { cwd: "/repo" });
 
     expect(exec).toHaveBeenCalledWith(
       ["worktree", "remove", "-f", "/repo/.worktrees/feat"],
@@ -490,14 +513,14 @@ describe("cleanupWorktree", () => {
 
   it("#11 存在しない worktree でエラー", async () => {
     const { deps } = makeDeps(false, false);
-    await expect(cleanupWorktree(deps, { branch: "nonexistent" }, { cwd: "/repo" })).rejects.toThrow(
-      "No worktree found for branch 'nonexistent'",
-    );
+    await expect(
+      cleanupWorktree(deps, { branch: "nonexistent", repo: "/repo" }, { cwd: "/repo" }),
+    ).rejects.toThrow("No worktree found for branch 'nonexistent'");
   });
 
   it("#12 実体ディレクトリが既に欠落している場合も安全に prune してブランチ削除（エラーで落ちない）", async () => {
     const { deps, exec, setEffectiveCwd } = makeDeps(false, true); // missing on disk
-    const result = await cleanupWorktree(deps, { branch: "feat" }, { cwd: "/repo" });
+    const result = await cleanupWorktree(deps, { branch: "feat", repo: "/repo" }, { cwd: "/repo" });
 
     // remove must NOT be called on a non-existent path
     expect(exec).not.toHaveBeenCalledWith(expect.arrayContaining(["remove"]), expect.anything());
@@ -513,7 +536,7 @@ describe("cleanupWorktree", () => {
     // Session is currently active in a DIFFERENT worktree
     deps.getEffectiveCwd = () => "/repo/.worktrees/other-active";
 
-    const result = await cleanupWorktree(deps, { branch: "feat" }, { cwd: "/repo" });
+    const result = await cleanupWorktree(deps, { branch: "feat", repo: "/repo" }, { cwd: "/repo" });
 
     // wt is cleaned up
     expect(result.details.branch).toBe("feat");
@@ -527,7 +550,7 @@ describe("cleanupWorktree", () => {
     const { deps, setEffectiveCwd } = makeDeps(false, false);
     deps.getEffectiveCwd = () => "/repo/.worktrees/feat"; // the active worktree IS removed
 
-    await cleanupWorktree(deps, { branch: "feat" }, { cwd: "/repo" });
+    await cleanupWorktree(deps, { branch: "feat", repo: "/repo" }, { cwd: "/repo" });
 
     expect(setEffectiveCwd).toHaveBeenCalledWith("/repo");
   });
@@ -536,13 +559,13 @@ describe("cleanupWorktree", () => {
     const { deps, setEffectiveCwd, appendEntry } = makeDeps(false, false);
     deps.getEffectiveCwd = () => "/repo"; // already at main repo
 
-    await cleanupWorktree(deps, { branch: "feat" }, { cwd: "/repo" });
+    await cleanupWorktree(deps, { branch: "feat", repo: "/repo" }, { cwd: "/repo" });
 
     expect(setEffectiveCwd).not.toHaveBeenCalled();
     expect(appendEntry).not.toHaveBeenCalledWith("cwd-change", expect.anything());
   });
 
-  it("#14 (I1) ctx.cwd で指定したリポジトリの worktree を cleanup する（別リポジトリがアクティブでも）", async () => {
+  it("#14 (I1) repo 引数で指定したリポジトリの worktree を cleanup する（別リポジトリがアクティブでも）", async () => {
     // Two repositories: repoA is the session-active one, repoB is the cleanup target.
     // exec() branches on its cwd argument so that a repo mix-up is observable.
     const exec = vi.fn().mockImplementation(async (args: string[], cwd?: string) => {
@@ -568,7 +591,7 @@ describe("cleanupWorktree", () => {
       getEffectiveCwd: () => "/repoA/.worktrees/active",
     };
 
-    const result = await cleanupWorktree(deps, { branch: "feat" }, { cwd: "/repoB" });
+    const result = await cleanupWorktree(deps, { branch: "feat", repo: "/repoB" }, { cwd: "/repoA" });
 
     expect(exec).toHaveBeenCalledWith(["worktree", "list", "--porcelain"], "/repoB");
     expect(exec).toHaveBeenCalledWith(
@@ -578,13 +601,13 @@ describe("cleanupWorktree", () => {
     expect(result.details.mainRepo).toBe("/repoB");
   });
 
-  it("#15 (I2) default が main のとき master worktree の削除を拒否する", async () => {
+  it("#15 default branch の worktree 削除を拒否する", async () => {
     const exec = vi.fn().mockImplementation(async (args: string[]) => {
       if (args[0] === "symbolic-ref") return ok("refs/remotes/origin/main\n");
       if (args[0] === "worktree" && args[1] === "list") {
         return ok(
           "worktree /repo\nHEAD 1\nbranch refs/heads/main\n\n" +
-            "worktree /repo/.worktrees/master\nHEAD 2\nbranch refs/heads/master\n\n",
+            "worktree /repo/.worktrees/feat\nHEAD 2\nbranch refs/heads/feat\n\n",
         );
       }
       return ok();
@@ -596,9 +619,39 @@ describe("cleanupWorktree", () => {
       updateFooterStatus: vi.fn(),
     };
 
-    await expect(cleanupWorktree(deps, { branch: "master" }, { cwd: "/repo" })).rejects.toThrow(
-      "Cannot remove the default branch",
-    );
+    await expect(
+      cleanupWorktree(deps, { branch: "main", repo: "/repo" }, { cwd: "/repo" }),
+    ).rejects.toThrow("Cannot remove the default branch (main) worktree");
     expect(exec).not.toHaveBeenCalledWith(expect.arrayContaining(["remove"]), expect.anything());
+  });
+
+  it("#16 default が main のとき master worktree は通常通り削除できる（magic alias なし）", async () => {
+    const exec = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === "symbolic-ref") return ok("refs/remotes/origin/main\n");
+      if (args[0] === "worktree" && args[1] === "list") {
+        return ok(
+          "worktree /repo\nHEAD 1\nbranch refs/heads/main\n\n" +
+            "worktree /repo/.worktrees/master\nHEAD 2\nbranch refs/heads/master\n\n",
+        );
+      }
+      if (args[0] === "status") return ok("");
+      if (args[0] === "worktree" && args[1] === "remove") return ok();
+      if (args[0] === "branch" && args[1] === "-d") return ok();
+      return ok();
+    });
+    const deps: OpsDeps = {
+      exec,
+      setEffectiveCwd: vi.fn(),
+      appendEntry: vi.fn(),
+      updateFooterStatus: vi.fn(),
+      statSync: vi.fn(() => ({ isDirectory: () => true })),
+    };
+
+    const result = await cleanupWorktree(deps, { branch: "master", repo: "/repo" }, { cwd: "/repo" });
+    expect(exec).toHaveBeenCalledWith(
+      ["worktree", "remove", "-f", "/repo/.worktrees/master"],
+      "/repo",
+    );
+    expect(result.details.branch).toBe("master");
   });
 });

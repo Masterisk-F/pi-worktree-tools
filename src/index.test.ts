@@ -294,6 +294,7 @@ describe("index.ts (Extension Harness)", () => {
 
       const cleanupTool = pi.registeredTools.get("worktree_cleanup");
       expect(cleanupTool.parameters.properties.branch).toBeDefined();
+      expect(cleanupTool.parameters.properties.repo).toBeDefined();
     });
 
     it("dispatches worktree_list tool execution to listWorktrees", async () => {
@@ -317,6 +318,69 @@ describe("index.ts (Extension Harness)", () => {
       const res = await listTool.execute("call-1", {}, null, null, { cwd: "/orig/repo" });
       expect(res.content[0].text).toContain("Found 1 worktree(s):");
       expect(res.details.mainRepo).toBe("/orig/repo");
+    });
+
+    it("dispatches worktree_cleanup with default repo (getEffectiveCwd)", async () => {
+      const cleanupTool = pi.registeredTools.get("worktree_cleanup");
+      expect(cleanupTool).toBeDefined();
+
+      pi.exec.mockImplementation(async (_bin: string, args: string[], opts?: { cwd?: string }) => {
+        if (args[0] === "worktree" && args[1] === "list") {
+          return {
+            stdout:
+              "worktree /orig/repo\nHEAD 1234\nbranch refs/heads/main\n\n" +
+              "worktree /orig/repo/.worktrees/feat\nHEAD 5678\nbranch refs/heads/feat\n\n",
+            code: 0,
+          };
+        }
+        if (args[0] === "symbolic-ref") return { stdout: "refs/remotes/origin/main\n", code: 0 };
+        if (args[0] === "status") return { stdout: "", code: 0 };
+        if (args[0] === "worktree" && args[1] === "remove") return { stdout: "", code: 0 };
+        if (args[0] === "worktree" && args[1] === "prune") return { stdout: "", code: 0 };
+        if (args[0] === "branch" && args[1] === "-d") return { stdout: "", code: 0 };
+        return { stdout: "", code: 0 };
+      });
+
+      const res = await cleanupTool.execute("call-2", { branch: "feat" }, null, null, {
+        cwd: "/different/dir",
+      });
+      expect(res.content[0].text).toContain("Cleaned up worktree 'feat'.");
+      expect(res.details.mainRepo).toBe("/orig/repo");
+    });
+
+    it("dispatches worktree_cleanup with explicit repo parameter", async () => {
+      const cleanupTool = pi.registeredTools.get("worktree_cleanup");
+      expect(cleanupTool).toBeDefined();
+
+      const executedCwds: string[] = [];
+      pi.exec.mockImplementation(async (_bin: string, args: string[], opts?: { cwd?: string }) => {
+        if (opts?.cwd) executedCwds.push(opts.cwd);
+        if (args[0] === "worktree" && args[1] === "list") {
+          return {
+            stdout:
+              "worktree /custom/repo\nHEAD 1234\nbranch refs/heads/main\n\n" +
+              "worktree /custom/repo/.worktrees/feat\nHEAD 5678\nbranch refs/heads/feat\n\n",
+            code: 0,
+          };
+        }
+        if (args[0] === "symbolic-ref") return { stdout: "refs/remotes/origin/main\n", code: 0 };
+        if (args[0] === "status") return { stdout: "", code: 0 };
+        if (args[0] === "worktree" && args[1] === "remove") return { stdout: "", code: 0 };
+        if (args[0] === "worktree" && args[1] === "prune") return { stdout: "", code: 0 };
+        if (args[0] === "branch" && args[1] === "-d") return { stdout: "", code: 0 };
+        return { stdout: "", code: 0 };
+      });
+
+      const res = await cleanupTool.execute(
+        "call-3",
+        { branch: "feat", repo: "/custom/repo" },
+        null,
+        null,
+        { cwd: "/orig/repo" },
+      );
+      expect(res.content[0].text).toContain("Cleaned up worktree 'feat'.");
+      expect(res.details.mainRepo).toBe("/custom/repo");
+      expect(executedCwds).toContain("/custom/repo");
     });
   });
 

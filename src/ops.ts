@@ -138,7 +138,7 @@ export async function createWorktree(
   const defaultBranch = await detectDefaultBranchWithExec(deps.exec, mainRepo);
 
   // If target is default branch, switch to main
-  if (branchName === defaultBranch || branchName === "main" || branchName === "master") {
+  if (branchName === defaultBranch) {
     return switchWorktree(deps, { branch: defaultBranch }, ctx);
   }
 
@@ -250,7 +250,7 @@ export async function switchWorktree(
 
   const defaultBranch = await detectDefaultBranchWithExec(deps.exec, mainRepo);
 
-  if (target === defaultBranch || target === "main" || target === "master") {
+  if (target === defaultBranch) {
     commitWorktreeChange(deps, ctx, {
       mainRepo,
       cwd: mainRepo,
@@ -310,7 +310,7 @@ export async function switchWorktree(
  */
 export async function cleanupWorktree(
   deps: OpsDeps,
-  params: { branch: string },
+  params: { branch: string; repo: string },
   ctx: { cwd: string; [key: string]: unknown },
 ): Promise<WorktreeToolResult> {
   const target = params.branch.trim();
@@ -323,18 +323,17 @@ export async function cleanupWorktree(
     throw new Error(`Invalid branch name: ${validationError}`);
   }
 
-  // An explicit ctx.cwd (e.g. session_shutdown passing { cwd: item.repo })
-  // identifies the repository to clean up. getEffectiveCwd() is a session-wide
-  // singleton and may point at a *different* repository, so it is only a fallback (I1).
-  const activeCwd = ctx.cwd || deps.getEffectiveCwd?.();
-  const mainRepo = await detectMainRepoWithExec(deps.exec, activeCwd);
+  if (!params.repo || !params.repo.trim()) {
+    throw new Error("Repository path cannot be empty");
+  }
+
+  const mainRepo = await detectMainRepoWithExec(deps.exec, params.repo.trim());
   if (!mainRepo) {
-    throw new Error("Not inside a git repository");
+    throw new Error(`Not inside a git repository: ${params.repo}`);
   }
 
   const defaultBranch = await detectDefaultBranchWithExec(deps.exec, mainRepo);
-  // Mirror the alias predicate used by createWorktree/switchWorktree (I2).
-  if (target === defaultBranch || target === "main" || target === "master") {
+  if (target === defaultBranch) {
     throw new Error(`Cannot remove the default branch (${defaultBranch}) worktree`);
   }
 

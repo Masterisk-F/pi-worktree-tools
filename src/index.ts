@@ -241,9 +241,17 @@ export default function (pi: ExtensionAPI): void {
     ],
     parameters: Type.Object({
       branch: Type.String({ description: "Branch name of the worktree to remove" }),
+      repo: Type.Optional(
+        Type.String({ description: "Repository path (defaults to current working repository)" }),
+      ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const result = await cleanupWorktree(deps, params, ctx as any);
+      const targetRepo = params.repo || getEffectiveCwd();
+      const result = await cleanupWorktree(
+        deps,
+        { branch: params.branch, repo: targetRepo },
+        ctx as any,
+      );
       return {
         content: [{ type: "text", text: result.content }],
         details: result.details,
@@ -355,7 +363,7 @@ export default function (pi: ExtensionAPI): void {
     if (/^[yY]/.test(answer.trim())) {
       for (const item of toCleanup) {
         try {
-          await cleanupWorktree(deps, { branch: item.wt.branchName }, { cwd: item.repo });
+          await cleanupWorktree(deps, { branch: item.wt.branchName, repo: item.repo }, ctx as any);
         } catch {
           // Ignore cleanup failures so process exit is not blocked
         }
