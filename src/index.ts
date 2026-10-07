@@ -1,28 +1,82 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createInterface } from "node:readline/promises";
+import { isAbsolute, resolve, join, relative } from "node:path";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { Type } from "typebox";
-import { setEffectiveCwd, getEffectiveCwd, updateFooterStatus as updateCwdFooter } from "@harms-haus/pi-cwd/src/state.js";
+
 import {
-  setMainRepoPath,
-  setDefaultBranch,
-  setCurrentBranch,
-  setCurrentWorktreePath,
-  updateFooterStatus as updateWorktreeFooter,
-} from "@harms-haus/pi-worktrees/src/state.js";
-import { parseWorktreePorcelain } from "@harms-haus/pi-worktrees/src/git.js";
-import type { WorktreeInfo } from "@harms-haus/pi-worktrees/src/types.js";
+  getEffectiveCwd,
+  setEffectiveCwd,
+  getOriginalCwd,
+  initOriginalCwd,
+  setWorktreeState,
+  updateCwdFooter,
+  updateWorktreeFooter,
+  restoreFromBranch,
+  CWD_CHANGE_TYPE,
+  WORKTREE_CHANGE_TYPE,
+} from "./state.js";
+import { bashSingleQuote, resolveWorktreeBaseDir } from "./paths.js";
+import {
+  parseWorktreePorcelain,
+  detectGitDirWithExec,
+  detectMainRepoWithExec,
+  type WorktreeInfo,
+} from "./git.js";
 import {
   listWorktrees,
   createWorktree,
   switchWorktree,
   cleanupWorktree,
-  detectMainRepoWithExec,
   type OpsDeps,
 } from "./ops.js";
 
-export default function (pi: ExtensionAPI): void {
-  const getCwd = () => getEffectiveCwd() || process.cwd();
+// File tools requiring a target path
+const FILE_TOOLS_REQUIRED_PATH = new Set(["read", "write", "edit"]);
 
+// File tools with an optional path argument (default to cwd)
+const FILE_TOOLS_OPTIONAL_PATH = new Set(["grep", "find", "ls"]);
+
+// Regex to rewrite cwd in system prompt
+const CWD_PROMPT_REGEX = /Current working directory: .+/;
+
+/**
+ * Ensure the resolved worktree base directory is registered in `.git/info/exclude`
+ * of the main repository (I5).
+ * Local-only configuration that never gets committed to tracked `.gitignore`.
+ */
+export async function ensureWorktreesExcluded(
+  exec: (args: string[], cwd?: string) => Promise<{ stdout: string; code: number }>,
+  mainRepo: string,
+  baseDir?: string,
+): Promise<void> {
+  try {
+    const gitDir = await detectGitDirWithExec(exec as any, mainRepo);
+    const excludePath = join(gitDir, "info", "exclude");
+    if (!existsSync(excludePath)) return;
+
+    // Resolve baseDir (defaults to settings/default if not provided)
+    const resolvedBase = baseDir ?? resolveWorktreeBaseDir(mainRepo, gitDir);
+
+    // Compute repo-relative pattern; if baseDir is outside mainRepo, do not add invalid gitignore rule
+    const rel = relative(mainRepo, resolvedBase);
+    if (!rel || rel.startsWith("..") || isAbsolute(rel)) {
+      return;
+    }
+
+    const pattern = rel.endsWith("/") ? rel : rel + "/";
+
+    const content = readFileSync(excludePath, "utf-8");
+    if (!content.split("\n").includes(pattern)) {
+      appendFileSync(excludePath, (content.endsWith("\n") ? "" : "\n") + pattern + "\n");
+    }
+  } catch {
+    // Non-critical; ignore failures
+  }
+}
+
+export default function (pi: ExtensionAPI): void {
+  const getCwd = () => getEffectiveCwd();
 
   const updateWorktreeStatus = (
     ctx: unknown,
@@ -31,21 +85,70 @@ export default function (pi: ExtensionAPI): void {
     mainRepo: string,
     defaultBranch: string,
   ) => {
-    setMainRepoPath(mainRepo);
-    setDefaultBranch(defaultBranch);
-    setCurrentBranch(branch);
-    setCurrentWorktreePath(worktreePath);
+    setWorktreeState(mainRepo, worktreePath, branch, defaultBranch);
     updateWorktreeFooter(ctx as any);
   };
 
   const deps: OpsDeps = {
     exec: (args, cwd) => pi.exec("git", args, { cwd: cwd || getCwd() }),
-    setEffectiveCwd,
+    setEffectiveCwd: (cwd) => setEffectiveCwd(cwd),
     appendEntry: (type, data) => pi.appendEntry(type, data),
-    updateFooterStatus: (ctx, cwd, original) => updateCwdFooter(ctx as any, cwd, original),
+    updateFooterStatus: (ctx) => updateCwdFooter(ctx as any),
     updateWorktreeStatus,
     getEffectiveCwd,
   };
+
+  // ── Tool call interception (makes all tools follow effectiveCwd) ─────
+  pi.on("tool_call", (event, _ctx) => {
+    if (getEffectiveCwd() === getOriginalCwd()) return undefined;
+
+    // A tool call arriving without an input object (e.g. via MCP) would otherwise
+    // throw a TypeError here and take the whole session down.
+    const input = event.input as Record<string, unknown> | null | undefined;
+    if (!input || typeof input !== "object") return undefined;
+
+    if (event.toolName === "bash") {
+      if (typeof input.command === "string") {
+        input.command = `cd ${bashSingleQuote(getEffectiveCwd())} && ${input.command}`;
+      }
+    } else if (FILE_TOOLS_REQUIRED_PATH.has(event.toolName)) {
+      if (typeof input.path === "string" && !isAbsolute(input.path)) {
+        input.path = resolve(getEffectiveCwd(), input.path);
+      }
+    } else if (FILE_TOOLS_OPTIONAL_PATH.has(event.toolName)) {
+      if (input.path === undefined || input.path === "") {
+        input.path = getEffectiveCwd();
+      } else if (typeof input.path === "string" && !isAbsolute(input.path)) {
+        input.path = resolve(getEffectiveCwd(), input.path);
+      }
+    }
+
+    return undefined;
+  });
+
+  // ── System prompt modification ──────────────────────────────────────
+  pi.on("before_agent_start", (event, _ctx) => {
+    if (getEffectiveCwd() === getOriginalCwd()) return undefined;
+    const modified = event.systemPrompt.replace(
+      CWD_PROMPT_REGEX,
+      `Current working directory: ${getEffectiveCwd()}`,
+    );
+    return { systemPrompt: modified };
+  });
+
+  // ── Session state restoration ───────────────────────────────────────
+  pi.on("session_start", (_event, ctx) => {
+    initOriginalCwd(ctx.cwd || process.cwd());
+    restoreFromBranch(ctx);
+    updateCwdFooter(ctx);
+    updateWorktreeFooter(ctx);
+  });
+
+  pi.on("session_tree", (_event, ctx) => {
+    restoreFromBranch(ctx);
+    updateCwdFooter(ctx);
+    updateWorktreeFooter(ctx);
+  });
 
   // ── worktree_list ───────────────────────────────────────────────────
   pi.registerTool({
@@ -59,7 +162,7 @@ export default function (pi: ExtensionAPI): void {
     ],
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-      const result = await listWorktrees(deps, {}, ctx);
+      const result = await listWorktrees(deps, {}, ctx as any);
       return {
         content: [{ type: "text", text: result.content }],
         details: result.details,
@@ -84,7 +187,11 @@ export default function (pi: ExtensionAPI): void {
       }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const result = await createWorktree(deps, params, ctx);
+      const result = await createWorktree(deps, params, ctx as any);
+      const mainRepo = result.details.mainRepo as string | undefined;
+      if (mainRepo) {
+        await ensureWorktreesExcluded(deps.exec, mainRepo);
+      }
       return {
         content: [{ type: "text", text: result.content }],
         details: result.details,
@@ -108,7 +215,13 @@ export default function (pi: ExtensionAPI): void {
       }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const result = await switchWorktree(deps, params, ctx);
+      const result = await switchWorktree(deps, params, ctx as any);
+      // switchWorktree may fall through to createWorktree internally, so this
+      // wrapper must exclude too or `.worktrees/` reappears in `git status` (B).
+      const mainRepo = result.details.mainRepo as string | undefined;
+      if (mainRepo) {
+        await ensureWorktreesExcluded(deps.exec, mainRepo);
+      }
       return {
         content: [{ type: "text", text: result.content }],
         details: result.details,
@@ -128,9 +241,17 @@ export default function (pi: ExtensionAPI): void {
     ],
     parameters: Type.Object({
       branch: Type.String({ description: "Branch name of the worktree to remove" }),
+      repo: Type.Optional(
+        Type.String({ description: "Repository path (defaults to current working repository)" }),
+      ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const result = await cleanupWorktree(deps, params, ctx);
+      const targetRepo = params.repo || getEffectiveCwd();
+      const result = await cleanupWorktree(
+        deps,
+        { branch: params.branch, repo: targetRepo },
+        ctx as any,
+      );
       return {
         content: [{ type: "text", text: result.content }],
         details: result.details,
@@ -173,14 +294,18 @@ export default function (pi: ExtensionAPI): void {
             candidatePaths.add(mainRepo);
           }
         }
-      } else if (entry.type === "custom" && entry.customType === "cwd-change") {
+      } else if (entry.type === "custom" && entry.customType === CWD_CHANGE_TYPE) {
         const cwd = (entry.data as { cwd?: string })?.cwd;
         if (typeof cwd === "string" && cwd.length > 0) {
           touchedPaths.add(cwd);
           candidatePaths.add(cwd);
         }
-      } else if (entry.type === "custom" && entry.customType === "worktree-change") {
-        const data = entry.data as { currentWorktreePath?: string; currentBranch?: string; mainRepoPath?: string };
+      } else if (entry.type === "custom" && entry.customType === WORKTREE_CHANGE_TYPE) {
+        const data = entry.data as {
+          currentWorktreePath?: string;
+          currentBranch?: string;
+          mainRepoPath?: string;
+        };
         if (data?.currentBranch) touchedBranches.add(data.currentBranch);
         if (data?.currentWorktreePath) {
           touchedPaths.add(data.currentWorktreePath);
@@ -224,6 +349,9 @@ export default function (pi: ExtensionAPI): void {
 
     if (toCleanup.length === 0) return;
 
+    // Non-interactive environments (CI, background, pipes): do not hang on readline (Q2)
+    if (!process.stdin.isTTY) return;
+
     // 5. Confirm deletion with user (readline-based: works after TUI shutdown)
     const names = toCleanup.map((item) => item.wt.branchName).join(", ");
     const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -235,8 +363,8 @@ export default function (pi: ExtensionAPI): void {
     if (/^[yY]/.test(answer.trim())) {
       for (const item of toCleanup) {
         try {
-          await cleanupWorktree(deps, { branch: item.wt.branchName }, { cwd: item.repo });
-        } catch (err) {
+          await cleanupWorktree(deps, { branch: item.wt.branchName, repo: item.repo }, ctx as any);
+        } catch {
           // Ignore cleanup failures so process exit is not blocked
         }
       }
