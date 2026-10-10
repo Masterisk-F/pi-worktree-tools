@@ -37,9 +37,6 @@ const FILE_TOOLS_REQUIRED_PATH = new Set(["read", "write", "edit"]);
 // File tools with an optional path argument (default to cwd)
 const FILE_TOOLS_OPTIONAL_PATH = new Set(["grep", "find", "ls"]);
 
-// Regex to rewrite cwd in system prompt
-const CWD_PROMPT_REGEX = /Current working directory: .+/;
-
 /**
  * Ensure the resolved worktree base directory is registered in `.git/info/exclude`
  * of the main repository (I5).
@@ -129,11 +126,8 @@ export default function (pi: ExtensionAPI): void {
   // ── System prompt modification ──────────────────────────────────────
   pi.on("before_agent_start", (event, _ctx) => {
     if (getEffectiveCwd() === getOriginalCwd()) return undefined;
-    const modified = event.systemPrompt.replace(
-      CWD_PROMPT_REGEX,
-      `Current working directory: ${getEffectiveCwd()}`,
-    );
-    return { systemPrompt: modified };
+    event.systemPromptOptions.cwd = getEffectiveCwd();
+    return undefined;
   });
 
   // ── Session state restoration ───────────────────────────────────────

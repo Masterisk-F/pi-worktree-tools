@@ -87,6 +87,42 @@ describe("index.ts (Extension Harness)", () => {
     });
   });
 
+  describe("before_agent_start hook (D-02)", () => {
+    it("points systemPromptOptions.cwd at the effective worktree cwd and returns undefined", () => {
+      const handler = pi.eventHandlers.get("before_agent_start")?.[0];
+      expect(handler).toBeDefined();
+
+      setEffectiveCwd("/orig/repo/.worktrees/feat");
+      const event = {
+        type: "before_agent_start",
+        prompt: "hello",
+        systemPrompt: "You are an assistant.\n\n<cwd>\n/orig/repo\n</cwd>",
+        systemPromptOptions: { cwd: "/orig/repo" },
+      };
+
+      const result = handler?.(event, {});
+      expect(event.systemPromptOptions.cwd).toBe("/orig/repo/.worktrees/feat");
+      expect(result).toBeUndefined();
+    });
+
+    it("leaves systemPromptOptions.cwd untouched when effectiveCwd equals originalCwd", () => {
+      const handler = pi.eventHandlers.get("before_agent_start")?.[0];
+      expect(handler).toBeDefined();
+
+      // effectiveCwd === originalCwd ("/orig/repo")
+      const event = {
+        type: "before_agent_start",
+        prompt: "hello",
+        systemPrompt: "You are an assistant.\n\n<cwd>\n/orig/repo\n</cwd>",
+        systemPromptOptions: { cwd: "/orig/repo" },
+      };
+
+      const result = handler?.(event, {});
+      expect(event.systemPromptOptions.cwd).toBe("/orig/repo");
+      expect(result).toBeUndefined();
+    });
+  });
+
   describe("session_shutdown hook (Q2)", () => {
     it("skips interactive question prompt when stdin is not a TTY", async () => {
       const shutdownHandler = pi.eventHandlers.get("session_shutdown")?.[0];
