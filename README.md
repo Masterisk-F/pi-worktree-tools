@@ -60,6 +60,11 @@ Or add to `~/.pi/agent/settings.json`:
 }
 ```
 
+## Compatibility
+
+- **pi-coding-agent**: `>= 0.86.0` (including `v1.0.0` – `v1.4.x+`)
+- Starting with Pi v0.86.0, system prompt assembly uses structured sections (`<cwd>`). Prompt CWD synchronization requires Pi v0.86.0 or higher. Earlier versions (0.85.x and below) lack section-based CWD synchronization.
+
 ## License
 
 MIT

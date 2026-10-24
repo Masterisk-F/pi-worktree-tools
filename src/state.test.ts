@@ -4,6 +4,7 @@ import {
   setEffectiveCwd,
   getOriginalCwd,
   initOriginalCwd,
+  resetSessionState,
   setWorktreeState,
   restoreFromBranch,
   updateCwdFooter,
@@ -179,5 +180,39 @@ describe("restoreFromBranch", () => {
 
     // Under I4, CWD must NOT diverge to the older /tmp. It must be synchronized with mainRepoPath!
     expect(getEffectiveCwd()).toBe(process.cwd());
+  });
+
+  it("resets effectiveCwd and worktree state cleanly when branch history has no worktree entries (P5 / S3)", () => {
+    initOriginalCwd("/orig/repo");
+    setEffectiveCwd("/orig/repo/.worktrees/old-feature");
+    setWorktreeState("/orig/repo", "/orig/repo/.worktrees/old-feature", "old-feature", "main");
+
+    // Scenario: user navigated /tree back to the first commit or started a fresh session with no worktree entries
+    const emptyEntries: SessionEntry[] = [
+      {
+        type: "message",
+        message: { role: "user", content: [{ type: "text", text: "initial hello" }] },
+      } as unknown as SessionEntry,
+    ];
+
+    restoreFromBranch(makeMockContext(emptyEntries));
+
+    expect(getEffectiveCwd()).toBe("/orig/repo");
+    const setStatus = vi.fn();
+    updateWorktreeFooter({
+      hasUI: true,
+      ui: { setStatus, theme: { fg: (_c: string, t: string) => t } },
+    } as unknown as ExtensionContext);
+    // Tree indicator should clear since we reset to default branch
+    expect(setStatus).toHaveBeenCalledWith(WORKTREE_STATUS_KEY, undefined);
+  });
+
+  it("resets all session state with resetSessionState on /new session startup (P5)", () => {
+    setEffectiveCwd("/some/old/worktree");
+    setWorktreeState("/old/repo", "/some/old/worktree", "old-feat", "main");
+
+    resetSessionState("/new/session/repo");
+    expect(getEffectiveCwd()).toBe("/new/session/repo");
+    expect(getOriginalCwd()).toBe("/new/session/repo");
   });
 });

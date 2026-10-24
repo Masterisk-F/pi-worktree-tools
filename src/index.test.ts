@@ -121,6 +121,65 @@ describe("index.ts (Extension Harness)", () => {
       expect(event.systemPromptOptions.cwd).toBe("/orig/repo");
       expect(result).toBeUndefined();
     });
+
+    it("replaces cwd in forceSystemPrompt when an earlier extension forced the prompt (P3 / S1)", () => {
+      const handler = pi.eventHandlers.get("before_agent_start")?.[0];
+      expect(handler).toBeDefined();
+
+      setEffectiveCwd("/orig/repo/.worktrees/feat");
+      const event = {
+        type: "before_agent_start",
+        prompt: "hello",
+        systemPrompt: "Protocol header\n\n<cwd>\n/orig/repo\n</cwd>",
+        systemPromptOptions: {
+          cwd: "/orig/repo",
+          forceSystemPrompt: "Protocol header\n\n<cwd>\n/orig/repo\n</cwd>",
+        },
+      };
+
+      const result = handler?.(event, {});
+      expect(event.systemPromptOptions.cwd).toBe("/orig/repo/.worktrees/feat");
+      expect(event.systemPromptOptions.forceSystemPrompt).toContain(
+        "<cwd>\n/orig/repo/.worktrees/feat\n</cwd>",
+      );
+      expect(result).toBeUndefined();
+    });
+
+    it("updates activePromptOptions immediately when setEffectiveCwd is called mid-run (P4 / S2)", async () => {
+      const startHandler = pi.eventHandlers.get("before_agent_start")?.[0];
+      const promptOpts = { cwd: "/orig/repo" };
+      const event = {
+        type: "before_agent_start",
+        prompt: "hello",
+        systemPrompt: "<cwd>\n/orig/repo\n</cwd>",
+        systemPromptOptions: promptOpts,
+      };
+      startHandler?.(event, {});
+
+      // Simulate a tool (e.g. worktree_create) executing mid-run
+      const createTool = pi.registeredTools.get("worktree_create");
+      expect(createTool).toBeDefined();
+
+      pi.exec.mockImplementation(async (bin: string, args: string[]) => {
+        if (args[0] === "worktree" && args[1] === "list") {
+          return { stdout: "worktree /orig/repo\nbranch refs/heads/main\n\n", stderr: "", code: 0 };
+        }
+        if (args[0] === "symbolic-ref") {
+          return { stdout: "refs/remotes/origin/main\n", stderr: "", code: 0 };
+        }
+        return { stdout: "", stderr: "", code: 0 };
+      });
+
+      await createTool.execute(
+        "call-1",
+        { branch: "feat-mid" },
+        null,
+        null,
+        { cwd: "/orig/repo", ui: { setStatus: vi.fn(), theme: { fg: (_c: string, t: string) => t } }, hasUI: true },
+      );
+
+      expect(promptOpts.cwd).toBe("/orig/repo/.worktrees/feat-mid");
+    });
   });
 
   describe("session_shutdown hook (Q2)", () => {

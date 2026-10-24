@@ -9,6 +9,7 @@ import {
   setEffectiveCwd,
   getOriginalCwd,
   initOriginalCwd,
+  resetSessionState,
   setWorktreeState,
   updateCwdFooter,
   updateWorktreeFooter,
@@ -36,6 +37,34 @@ const FILE_TOOLS_REQUIRED_PATH = new Set(["read", "write", "edit"]);
 
 // File tools with an optional path argument (default to cwd)
 const FILE_TOOLS_OPTIONAL_PATH = new Set(["grep", "find", "ls"]);
+
+// Regex patterns to rewrite cwd in forceSystemPrompt when an earlier extension forced it (P3)
+const CWD_TAG_REGEX = /<cwd>\n[\s\S]*?\n<\/cwd>/;
+const LEGACY_CWD_REGEX = /Current working directory: .+/;
+
+/**
+ * Apply the effective worktree CWD to the active systemPromptOptions.
+ * Mutates options.cwd for structured section diffing, and also updates
+ * any forceSystemPrompt string already set by an earlier extension (P3).
+ */
+function applyCwdToPromptOptions(opts: any, cwd: string): void {
+  if (!opts) return;
+  const normalized = cwd.replace(/\\/g, "/");
+  opts.cwd = cwd;
+  if (typeof opts.forceSystemPrompt === "string") {
+    if (CWD_TAG_REGEX.test(opts.forceSystemPrompt)) {
+      opts.forceSystemPrompt = opts.forceSystemPrompt.replace(
+        CWD_TAG_REGEX,
+        `<cwd>\n${normalized}\n</cwd>`,
+      );
+    } else if (LEGACY_CWD_REGEX.test(opts.forceSystemPrompt)) {
+      opts.forceSystemPrompt = opts.forceSystemPrompt.replace(
+        LEGACY_CWD_REGEX,
+        `Current working directory: ${cwd}`,
+      );
+    }
+  }
+}
 
 /**
  * Ensure the resolved worktree base directory is registered in `.git/info/exclude`
@@ -75,6 +104,10 @@ export async function ensureWorktreesExcluded(
 export default function (pi: ExtensionAPI): void {
   const getCwd = () => getEffectiveCwd();
 
+  // Active prompt options reference from before_agent_start, allowing
+  // tool execution to immediately update the prompt options for subsequent turns (P4).
+  let activePromptOptions: any = null;
+
   const updateWorktreeStatus = (
     ctx: unknown,
     branch: string,
@@ -88,7 +121,10 @@ export default function (pi: ExtensionAPI): void {
 
   const deps: OpsDeps = {
     exec: (args, cwd) => pi.exec("git", args, { cwd: cwd || getCwd() }),
-    setEffectiveCwd: (cwd) => setEffectiveCwd(cwd),
+    setEffectiveCwd: (cwd) => {
+      setEffectiveCwd(cwd);
+      applyCwdToPromptOptions(activePromptOptions, cwd);
+    },
     appendEntry: (type, data) => pi.appendEntry(type, data),
     updateFooterStatus: (ctx) => updateCwdFooter(ctx as any),
     updateWorktreeStatus,
@@ -125,14 +161,17 @@ export default function (pi: ExtensionAPI): void {
 
   // ── System prompt modification ──────────────────────────────────────
   pi.on("before_agent_start", (event, _ctx) => {
-    if (getEffectiveCwd() === getOriginalCwd()) return undefined;
-    event.systemPromptOptions.cwd = getEffectiveCwd();
+    activePromptOptions = event.systemPromptOptions;
+    const effectiveCwd = getEffectiveCwd();
+    if (effectiveCwd === getOriginalCwd()) return undefined;
+    applyCwdToPromptOptions(event.systemPromptOptions, effectiveCwd);
     return undefined;
   });
 
   // ── Session state restoration ───────────────────────────────────────
   pi.on("session_start", (_event, ctx) => {
-    initOriginalCwd(ctx.cwd || process.cwd());
+    const startCwd = ctx.cwd || process.cwd();
+    resetSessionState(startCwd);
     restoreFromBranch(ctx);
     updateCwdFooter(ctx);
     updateWorktreeFooter(ctx);
