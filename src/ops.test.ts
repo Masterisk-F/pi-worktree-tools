@@ -47,8 +47,15 @@ function createMockDeps(
         throw err;
       }),
   );
+  const deps: OpsDeps = {
+    exec,
+    setEffectiveCwd,
+    appendEntry,
+    updateFooterStatus,
+    statSync,
+  };
   return {
-    deps: { exec, setEffectiveCwd, appendEntry, updateFooterStatus, statSync },
+    deps,
     exec,
     setEffectiveCwd,
     appendEntry,

@@ -56,6 +56,18 @@ export function initOriginalCwd(cwd: string): void {
   }
 }
 
+/**
+ * Reset module session state cleanly on new/resume session startup (P5).
+ * Prevents a previous session's worktree CWD from leaking across /new.
+ */
+export function resetSessionState(cwd: string): void {
+  originalCwd = cwd;
+  effectiveCwd = cwd;
+  mainRepoPath = "";
+  currentWorktreePath = "";
+  currentBranch = defaultBranch;
+}
+
 export function getEffectiveCwd(): string {
   return effectiveCwd;
 }
@@ -135,6 +147,14 @@ export function updateWorktreeFooter(ctx: ExtensionContext): void {
  * Restores working directory and worktree state, verifying paths still exist on disk.
  */
 export function restoreFromBranch(ctx: ExtensionContext): void {
+  // Reset to baseline before replaying branch entries (P5).
+  // Prevents stale worktree CWD from persisting when navigating /tree
+  // to a point before any worktree was touched.
+  effectiveCwd = originalCwd;
+  mainRepoPath = "";
+  currentWorktreePath = "";
+  currentBranch = defaultBranch;
+
   let entries: SessionEntry[];
   try {
     entries = ctx.sessionManager.getBranch();
